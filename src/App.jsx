@@ -396,37 +396,128 @@ function applyMagneticSnap(rawX, rawY, movingPiece, pieces) {
   };
 }
 
-const sidebarButtonStyle = {
-  padding: "10px 12px",
-  cursor: "pointer",
-  textAlign: "left",
-  borderRadius: 12,
-  border: "1px solid #30405f",
-  background: "#16213b",
-  color: "#fff",
-  fontWeight: 600,
+function getViewportInfo() {
+  if (typeof window === "undefined") {
+    return { isMobile: false, isTablet: false, width: 1440 };
+  }
+
+  const width = window.innerWidth;
+  return {
+    width,
+    isMobile: width <= 900,
+    isTablet: width > 900 && width <= 1280,
+  };
+}
+
+const palette = {
+  bg: "#08101f",
+  bg2: "#0d172b",
+  panel: "rgba(15, 23, 42, 0.92)",
+  panel2: "rgba(17, 26, 45, 0.96)",
+  border: "#233455",
+  borderSoft: "#2e446b",
+  text: "#ffffff",
+  textSoft: "#9fb0d1",
+  primary: "#3b82f6",
+  primarySoft: "rgba(59,130,246,0.12)",
+  canvas: "#eef3fa",
 };
 
-const controlButtonStyle = {
-  padding: "8px 12px",
-  borderRadius: 10,
-  border: "1px solid #334155",
-  background: "#0f172a",
+const inputStyle = {
+  width: "100%",
+  boxSizing: "border-box",
+  borderRadius: 12,
+  border: `1px solid ${palette.borderSoft}`,
+  background: "#0b1325",
   color: "#fff",
+  padding: "12px 14px",
+  outline: "none",
+  fontSize: 14,
+};
+
+const buttonBase = {
+  border: "1px solid transparent",
+  borderRadius: 12,
   cursor: "pointer",
   fontWeight: 700,
+  transition: "0.18s ease",
 };
 
 const smallButtonStyle = {
-  padding: "8px 10px",
-  borderRadius: 10,
-  border: "1px solid #30405f",
+  ...buttonBase,
+  padding: "10px 12px",
+  border: `1px solid ${palette.border}`,
   background: "#16213b",
   color: "#fff",
-  cursor: "pointer",
-  fontWeight: 600,
   fontSize: 12,
 };
+
+const sidebarButtonStyle = {
+  ...buttonBase,
+  padding: "12px 14px",
+  textAlign: "left",
+  borderRadius: 14,
+  border: `1px solid ${palette.border}`,
+  background: "#16213b",
+  color: "#fff",
+  fontWeight: 700,
+};
+
+const controlButtonStyle = {
+  ...buttonBase,
+  padding: "10px 14px",
+  borderRadius: 12,
+  border: `1px solid ${palette.border}`,
+  background: "#0f172a",
+  color: "#fff",
+  fontWeight: 700,
+};
+
+function SectionCard({ title, subtitle, children }) {
+  return (
+    <div
+      style={{
+        marginBottom: 16,
+        padding: 14,
+        borderRadius: 18,
+        background: palette.panel2,
+        border: `1px solid ${palette.border}`,
+        backdropFilter: "blur(10px)",
+      }}
+    >
+      {(title || subtitle) && (
+        <div style={{ marginBottom: 10 }}>
+          {title && (
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: subtitle ? 4 : 0 }}>
+              {title}
+            </div>
+          )}
+          {subtitle && (
+            <div style={{ fontSize: 12, color: palette.textSoft, lineHeight: 1.5 }}>
+              {subtitle}
+            </div>
+          )}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function SummaryLines({ counts }) {
+  return (
+    <div style={{ fontSize: 13, color: "#d7e1f7", lineHeight: 1.8 }}>
+      {AVAILABLE_PIECES.map((size) => (
+        <div key={size}>
+          Peça {size}: <strong>{counts[String(size)] || 0}</strong>
+        </div>
+      ))}
+      <div>
+        Cubo: <strong>{counts.cube || 0}</strong>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const boardRef = useRef(null);
@@ -441,10 +532,17 @@ export default function App() {
   const [selectionRect, setSelectionRect] = useState(null);
   const [autoWidth, setAutoWidth] = useState("");
   const [autoHeight, setAutoHeight] = useState("");
+  const [viewport, setViewport] = useState(getViewportInfo());
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const isSpacePressedRef = useRef(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, left: 0, top: 0 });
+
+  const { isMobile, isTablet } = viewport;
+  const sidebarWidth = isMobile ? Math.min(360, viewport.width * 0.88) : isTablet ? 320 : 360;
+  const topBarHeight = isMobile ? 64 : 72;
+  const bottomToolbarHeight = isMobile ? 82 : 0;
 
   useEffect(() => {
     const autosave = readAutosave();
@@ -455,6 +553,21 @@ export default function App() {
       setCurrentProjectId(autosave.project.id || null);
     }
   }, []);
+
+  useEffect(() => {
+    function handleResize() {
+      setViewport(getViewportInfo());
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setSidebarOpen(false);
+    }
+  }, [isMobile]);
 
   const currentProject = useMemo(
     () =>
@@ -586,6 +699,10 @@ export default function App() {
     setSelectedId(null);
     setSelectedBoxIds(createdIds);
     setSelectionRect(null);
+
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
   }
 
   function addPiece(type) {
@@ -600,6 +717,10 @@ export default function App() {
     setPieces((prev) => [...prev, newPiece]);
     setSelectedId(newPiece.id);
     setSelectedBoxIds([]);
+
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
   }
 
   function updatePiece(id, newProps) {
@@ -631,6 +752,10 @@ export default function App() {
     writeAutosave(
       createProjectPayload({ id, name: "Novo projeto", pieces: [], zoom: 1 })
     );
+
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
   }
 
   function handleExportProject() {
@@ -691,6 +816,10 @@ export default function App() {
           exportedAt: new Date().toISOString(),
           project,
         });
+
+        if (isMobile) {
+          setSidebarOpen(false);
+        }
       } catch {
         alert("Não foi possível importar este arquivo.");
       } finally {
@@ -1047,6 +1176,10 @@ export default function App() {
         e.preventDefault();
         setZoom((z) => Math.max(z - 0.1, 0.08));
       }
+
+      if (e.key === "Escape" && isMobile) {
+        setSidebarOpen(false);
+      }
     }
 
     function handleKeyUp(e) {
@@ -1063,7 +1196,7 @@ export default function App() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [selectedId, selectedBoxIds, pieces, projectName, selectedBoxBounds, selectedBoxCounts]);
+  }, [selectedId, selectedBoxIds, pieces, projectName, selectedBoxBounds, selectedBoxCounts, isMobile]);
 
   useEffect(() => {
     const board = boardRef.current;
@@ -1169,92 +1302,52 @@ export default function App() {
     window.addEventListener("mouseup", handleMouseUp);
   }
 
-  return (
-    <div
-      style={{
-        height: "100vh",
-        overflow: "hidden",
-        background: "#0b1020",
-        color: "#fff",
-        fontFamily: "Arial, sans-serif",
-        position: "relative",
-      }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: "min(320px, 30vw)",
-          minWidth: 250,
-          background: "#0f172a",
-          color: "#fff",
-          padding: 18,
-          borderRight: "1px solid #1f2a44",
-          boxSizing: "border-box",
-          overflowY: "auto",
-          boxShadow: "0 0 25px rgba(0,0,0,0.25)",
-          zIndex: 3,
-        }}
-      >
+  function renderSidebarContent() {
+    return (
+      <div style={{ padding: isMobile ? 14 : 18 }}>
         <div
           style={{
-            marginBottom: 18,
-            padding: 14,
-            borderRadius: 16,
+            marginBottom: 16,
+            padding: 16,
+            borderRadius: 20,
             background: "linear-gradient(180deg, #16203a 0%, #101827 100%)",
-            border: "1px solid #263556",
+            border: `1px solid ${palette.border}`,
+            boxShadow: "0 12px 30px rgba(0,0,0,0.22)",
           }}
         >
-          <div style={{ fontSize: 22, fontWeight: 700 }}>Editor Q15</div>
-          <div style={{ marginTop: 6, fontSize: 13, color: "#9fb0d1" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>Editor Q15</div>
+          <div style={{ marginTop: 6, fontSize: 13, color: palette.textSoft, lineHeight: 1.6 }}>
             Monte a estrutura visualmente e acompanhe o resumo das peças.
           </div>
         </div>
 
-        <div
-          style={{
-            marginBottom: 18,
-            padding: 14,
-            borderRadius: 16,
-            background: "#111a2d",
-            border: "1px solid #243250",
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          <label style={{ fontSize: 12, color: "#9fb0d1" }}>Nome do projeto</label>
+        <SectionCard title="Projeto">
+          <label style={{ display: "block", fontSize: 12, color: palette.textSoft, marginBottom: 8 }}>
+            Nome do projeto
+          </label>
           <input
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
             placeholder="Digite o nome do projeto"
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              borderRadius: 10,
-              border: "1px solid #30405f",
-              background: "#0f172a",
-              color: "#fff",
-              padding: "10px 12px",
-              outline: "none",
-            }}
+            style={inputStyle}
           />
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
             <button onClick={handleExportProject} style={smallButtonStyle}>
-              Exportar arquivo
+              Exportar
             </button>
             <button onClick={handleImportClick} style={smallButtonStyle}>
-              Importar arquivo
+              Importar
             </button>
             <button onClick={handleNewProject} style={smallButtonStyle}>
               Novo
             </button>
           </div>
-          <div style={{ fontSize: 11, color: "#9fb0d1" }}>
+
+          <div style={{ fontSize: 11, color: palette.textSoft, lineHeight: 1.6, marginTop: 10 }}>
             Auto save local ativo. Para guardar e abrir depois quando quiser, exporte um arquivo.
           </div>
+
           <input
             ref={fileInputRef}
             type="file"
@@ -1262,188 +1355,267 @@ export default function App() {
             onChange={handleImportFile}
             style={{ display: "none" }}
           />
-        </div>
+        </SectionCard>
 
-        <div
-          style={{
-            marginBottom: 18,
-            padding: 14,
-            borderRadius: 16,
-            background: "#111a2d",
-            border: "1px solid #243250",
-            fontSize: 12,
-            color: "#d7e1f7",
-            lineHeight: 1.7,
-          }}
-        >
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Seleção de box</div>
-          Arraste o mouse fora das peças para selecionar um box inteiro.
-          <br />
-          Depois clique em qualquer peça do grupo para mover tudo junto.
-          <br />
-          Clique em área vazia sem box para cancelar a seleção.
-          <br />
-          Ctrl + P imprime apenas o box selecionado + resumo.
-        </div>
-
-        <div
-          style={{
-            marginBottom: 18,
-            padding: 14,
-            borderRadius: 16,
-            background: "#111a2d",
-            border: "1px solid #243250",
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Gerar box automático</div>
-          <div style={{ fontSize: 12, color: "#9fb0d1", lineHeight: 1.6 }}>
-            Digite largura x altura em cm. O sistema mantém a montagem manual e adiciona o box pronto na área de montagem.
+        <SectionCard title="Seleção de box">
+          <div style={{ fontSize: 12, color: "#d7e1f7", lineHeight: 1.7 }}>
+            Arraste o mouse fora das peças para selecionar um box inteiro.
+            <br />
+            Depois clique em qualquer peça do grupo para mover tudo junto.
+            <br />
+            Clique em área vazia sem box para cancelar a seleção.
+            <br />
+            Ctrl + P imprime apenas o box selecionado + resumo.
           </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Gerar box automático"
+          subtitle="Digite largura x altura em cm. O sistema mantém a montagem manual e adiciona o box pronto na área."
+        >
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <input
               value={autoWidth}
               onChange={(e) => setAutoWidth(e.target.value)}
               placeholder="Largura (cm)"
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                borderRadius: 10,
-                border: "1px solid #30405f",
-                background: "#0f172a",
-                color: "#fff",
-                padding: "10px 12px",
-                outline: "none",
-              }}
+              style={inputStyle}
             />
             <input
               value={autoHeight}
               onChange={(e) => setAutoHeight(e.target.value)}
               placeholder="Altura (cm)"
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                borderRadius: 10,
-                border: "1px solid #30405f",
-                background: "#0f172a",
-                color: "#fff",
-                padding: "10px 12px",
-                outline: "none",
-              }}
+              style={inputStyle}
             />
           </div>
-          <button onClick={handleGenerateAutomaticBox} style={smallButtonStyle}>
+
+          <button
+            onClick={handleGenerateAutomaticBox}
+            style={{ ...smallButtonStyle, width: "100%", marginTop: 10, justifyContent: "center" }}
+          >
             Gerar box por medida
           </button>
-          <div style={{ fontSize: 11, color: "#9fb0d1", lineHeight: 1.6 }}>
+
+          <div style={{ fontSize: 11, color: palette.textSoft, lineHeight: 1.6, marginTop: 10 }}>
             Prioriza as maiores peças na ordem 300, 270, 250, 200, 170 e 150, mistura entre elas para fechar a medida e usa menores se precisar concluir o tamanho final.
           </div>
-        </div>
+        </SectionCard>
 
-        <h3 style={{ marginTop: 0, marginBottom: 10 }}>Peças Q15</h3>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {AVAILABLE_PIECES.map((size) => (
-            <button
-              key={size}
-              onClick={() => addPiece(String(size))}
-              style={sidebarButtonStyle}
-            >
-              Peça {size}
-            </button>
-          ))}
-
-          <button onClick={() => addPiece("cube")} style={sidebarButtonStyle}>
-            Cubo 15
-          </button>
-        </div>
-
-        <div
-          style={{
-            marginTop: 22,
-            padding: 14,
-            borderRadius: 16,
-            background: "#111a2d",
-            border: "1px solid #243250",
-          }}
-        >
-          <h4 style={{ marginTop: 0, marginBottom: 10 }}>Resumo geral</h4>
-          <div style={{ fontSize: 13, color: "#d7e1f7", lineHeight: 1.8 }}>
+        <SectionCard title="Peças Q15">
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
             {AVAILABLE_PIECES.map((size) => (
-              <div key={size}>
-                Peça {size}: <strong>{counts[String(size)] || 0}</strong>
-              </div>
+              <button
+                key={size}
+                onClick={() => addPiece(String(size))}
+                style={sidebarButtonStyle}
+              >
+                Peça {size}
+              </button>
             ))}
-            <div>
-              Cubo: <strong>{counts.cube || 0}</strong>
-            </div>
+
+            <button onClick={() => addPiece("cube")} style={sidebarButtonStyle}>
+              Cubo 15
+            </button>
           </div>
-        </div>
+        </SectionCard>
+
+        <SectionCard title="Resumo geral">
+          <SummaryLines counts={counts} />
+        </SectionCard>
 
         {selectedBoxIds.length > 0 && (
-          <div
-            style={{
-              marginTop: 18,
-              padding: 14,
-              borderRadius: 16,
-              background: "#111a2d",
-              border: "1px solid #243250",
-            }}
-          >
-            <h4 style={{ marginTop: 0, marginBottom: 10 }}>Resumo do box selecionado</h4>
-            <div style={{ fontSize: 13, color: "#d7e1f7", lineHeight: 1.8 }}>
-              {AVAILABLE_PIECES.map((size) => (
-                <div key={size}>
-                  Peça {size}: <strong>{selectedBoxCounts[String(size)] || 0}</strong>
-                </div>
-              ))}
-              <div>
-                Cubo: <strong>{selectedBoxCounts.cube || 0}</strong>
-              </div>
-            </div>
-          </div>
+          <SectionCard title="Resumo do box selecionado">
+            <SummaryLines counts={selectedBoxCounts} />
+          </SectionCard>
         )}
 
-        <div
-          style={{
-            marginTop: 18,
-            padding: 14,
-            borderRadius: 16,
-            background: "#111a2d",
-            border: "1px solid #243250",
-            fontSize: 12,
-            color: "#9fb0d1",
-            lineHeight: 1.7,
-          }}
-        >
-          Arraste com o mouse
-          <br />
-          Duplo clique gira
-          <br />
-          Delete apaga a peça selecionada
-          <br />
-          Alt + scroll controla o zoom
-          <br />
-          Espaço + arrastar navega pela área
-          <br />
-          Exporte em arquivo para importar depois quando quiser
+        <SectionCard title="Atalhos">
+          <div style={{ fontSize: 12, color: palette.textSoft, lineHeight: 1.7 }}>
+            Arraste com o mouse
+            <br />
+            Duplo clique gira
+            <br />
+            Delete apaga a peça selecionada
+            <br />
+            Alt + scroll controla o zoom
+            <br />
+            Espaço + arrastar navega pela área
+            <br />
+            Exporte em arquivo para importar depois quando quiser
+          </div>
+        </SectionCard>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        height: "100dvh",
+        overflow: "hidden",
+        background: palette.bg,
+        color: palette.text,
+        fontFamily: "Arial, sans-serif",
+        position: "relative",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(circle at top left, rgba(59,130,246,0.14), transparent 28%), radial-gradient(circle at top right, rgba(99,102,241,0.12), transparent 22%), linear-gradient(180deg, #08101f 0%, #0a1222 100%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          top: 0,
+          height: topBarHeight,
+          zIndex: 50,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: isMobile ? "0 12px" : "0 18px",
+          background: "rgba(8, 16, 31, 0.86)",
+          backdropFilter: "blur(14px)",
+          borderBottom: `1px solid ${palette.border}`,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+          {isMobile && (
+            <button
+              onClick={() => setSidebarOpen(true)}
+              style={{
+                ...controlButtonStyle,
+                padding: "10px 12px",
+                minWidth: 44,
+              }}
+            >
+              ☰
+            </button>
+          )}
+
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              Q15 Builder
+            </div>
+            <div style={{ fontSize: 12, color: palette.textSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: isMobile ? 180 : 320 }}>
+              {projectName || "Novo projeto"}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {!isMobile && (
+            <>
+              <button onClick={handleExportProject} style={smallButtonStyle}>
+                Exportar
+              </button>
+              <button onClick={handleImportClick} style={smallButtonStyle}>
+                Importar
+              </button>
+            </>
+          )}
+
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: `1px solid ${palette.border}`,
+              background: palette.panel,
+              fontSize: 12,
+              color: palette.textSoft,
+            }}
+          >
+            Zoom {(zoom * 100).toFixed(0)}%
+          </div>
         </div>
       </div>
+
+      {!isMobile && (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: topBarHeight,
+            bottom: 0,
+            width: sidebarWidth,
+            background: "rgba(10,17,32,0.84)",
+            borderRight: `1px solid ${palette.border}`,
+            boxSizing: "border-box",
+            overflowY: "auto",
+            zIndex: 30,
+            backdropFilter: "blur(14px)",
+          }}
+        >
+          {renderSidebarContent()}
+        </div>
+      )}
+
+      {isMobile && sidebarOpen && (
+        <>
+          <div
+            onClick={() => setSidebarOpen(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 59,
+              background: "rgba(0,0,0,0.45)",
+            }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              bottom: 0,
+              width: sidebarWidth,
+              zIndex: 60,
+              background: "rgba(10,17,32,0.98)",
+              borderRight: `1px solid ${palette.border}`,
+              overflowY: "auto",
+              boxShadow: "20px 0 60px rgba(0,0,0,0.45)",
+            }}
+          >
+            <div
+              style={{
+                position: "sticky",
+                top: 0,
+                zIndex: 2,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "14px 14px 10px",
+                background: "rgba(10,17,32,0.98)",
+                borderBottom: `1px solid ${palette.border}`,
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Menu do projeto</div>
+              <button onClick={() => setSidebarOpen(false)} style={controlButtonStyle}>
+                ✕
+              </button>
+            </div>
+            {renderSidebarContent()}
+          </div>
+        </>
+      )}
 
       <div
         ref={boardRef}
         onMouseDown={handleBoardMouseDown}
         style={{
           position: "absolute",
-          left: "min(320px, 30vw)",
+          left: isMobile ? 0 : sidebarWidth,
           right: 0,
-          top: 0,
-          bottom: 0,
+          top: topBarHeight,
+          bottom: isMobile ? bottomToolbarHeight : 0,
           overflow: "auto",
-          background: "#e8edf5",
-          padding: 24,
+          background: palette.canvas,
+          padding: isMobile ? 12 : 20,
           cursor: isSpacePressedRef.current
             ? isPanningRef.current
               ? "grabbing"
@@ -1463,13 +1635,13 @@ export default function App() {
               width: 30000,
               height: 8000,
               position: "relative",
-              borderRadius: 24,
-              border: "1px solid #22314f",
+              borderRadius: isMobile ? 18 : 24,
+              border: "1px solid #cad4e2",
               backgroundColor: "#ffffff",
               backgroundImage:
-                "linear-gradient(rgba(15,23,42,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.08) 1px, transparent 1px)",
+                "linear-gradient(rgba(15,23,42,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.05) 1px, transparent 1px)",
               backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
-              boxShadow: "0 8px 24px rgba(15,23,42,0.08)",
+              boxShadow: "0 14px 40px rgba(15,23,42,0.10)",
               transform: `scale(${zoom})`,
               transformOrigin: "top left",
             }}
@@ -1507,6 +1679,7 @@ export default function App() {
                   pointerEvents: "none",
                   zIndex: 9,
                   boxSizing: "border-box",
+                  borderRadius: 6,
                 }}
               />
             )}
@@ -1525,46 +1698,87 @@ export default function App() {
                 isSpacePressedRef={isSpacePressedRef}
                 selectedBoxIds={selectedBoxIds}
                 startGroupMove={startGroupMove}
+                isMobile={isMobile}
               />
             ))}
           </div>
         </div>
       </div>
 
-      <div
-        style={{
-          position: "fixed",
-          right: 20,
-          bottom: 20,
-          background: "#111827",
-          border: "1px solid #2a3653",
-          padding: 12,
-          borderRadius: 14,
-          display: "flex",
-          gap: 10,
-          zIndex: 999,
-          boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
-        }}
-      >
-        <button
-          onClick={() => setZoom((z) => Math.min(z + 0.1, 2))}
-          style={controlButtonStyle}
+      {!isMobile && (
+        <div
+          style={{
+            position: "fixed",
+            right: 20,
+            bottom: 20,
+            background: "rgba(17,24,39,0.94)",
+            border: `1px solid ${palette.border}`,
+            padding: 10,
+            borderRadius: 16,
+            display: "flex",
+            gap: 8,
+            zIndex: 80,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+            backdropFilter: "blur(12px)",
+          }}
         >
-          +
-        </button>
-        <button
-          onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))}
-          style={controlButtonStyle}
+          <button
+            onClick={() => setZoom((z) => Math.min(z + 0.1, 2))}
+            style={controlButtonStyle}
+          >
+            +
+          </button>
+          <button
+            onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))}
+            style={controlButtonStyle}
+          >
+            -
+          </button>
+          <button onClick={() => setZoom(1)} style={controlButtonStyle}>
+            Reset
+          </button>
+          <button onClick={goToOrigin} style={controlButtonStyle}>
+            Início
+          </button>
+        </div>
+      )}
+
+      {isMobile && (
+        <div
+          style={{
+            position: "fixed",
+            left: 10,
+            right: 10,
+            bottom: 10,
+            zIndex: 80,
+            display: "grid",
+            gridTemplateColumns: "repeat(5, 1fr)",
+            gap: 8,
+            padding: 10,
+            borderRadius: 18,
+            background: "rgba(17,24,39,0.96)",
+            border: `1px solid ${palette.border}`,
+            boxShadow: "0 14px 35px rgba(0,0,0,0.35)",
+            backdropFilter: "blur(12px)",
+          }}
         >
-          -
-        </button>
-        <button onClick={() => setZoom(1)} style={controlButtonStyle}>
-          Reset
-        </button>
-        <button onClick={goToOrigin} style={controlButtonStyle}>
-          Início
-        </button>
-      </div>
+          <button onClick={() => setSidebarOpen(true)} style={controlButtonStyle}>
+            Menu
+          </button>
+          <button onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))} style={controlButtonStyle}>
+            -
+          </button>
+          <button onClick={() => setZoom((z) => Math.min(z + 0.1, 2))} style={controlButtonStyle}>
+            +
+          </button>
+          <button onClick={() => setZoom(1)} style={controlButtonStyle}>
+            100%
+          </button>
+          <button onClick={goToOrigin} style={controlButtonStyle}>
+            Início
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1581,6 +1795,7 @@ function Piece({
   isSpacePressedRef,
   selectedBoxIds,
   startGroupMove,
+  isMobile,
 }) {
   const offsetRef = useRef({ x: 0, y: 0 });
   const { width, height } = getPieceSize(piece.type, piece.rotation);
@@ -1675,6 +1890,7 @@ function Piece({
           ? "0 0 0 2px rgba(59,130,246,0.15)"
           : "0 1px 2px rgba(0,0,0,0.08)",
         zIndex: 20,
+        borderRadius: isMobile ? 2 : 0,
       }}
     >
       {isCube ? (
