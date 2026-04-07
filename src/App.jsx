@@ -1,807 +1,277 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+// ============================================================================
+// REGRAS DE NEGÓCIO E LÓGICA
+// ============================================================================
 const GRID = 5;
 const SCALE = 1.8;
 const THICKNESS = 15 * SCALE;
 const SNAP_DISTANCE = 18;
 const AVAILABLE_PIECES = [20, 25, 50, 70, 100, 120, 130, 150, 170, 200, 250, 270, 300];
+const AUTOSAVE_KEY = "q15_builder_autosave_v1";
 
-// peças com prioridade na montagem automática
 const PREFERRED_PIECES = [300, 270, 250, 200, 170, 150];
 
-function snapToGrid(value) {
-  return Math.round(value / GRID) * GRID;
-}
-
-function rangesOverlap(aStart, aEnd, bStart, bEnd, tolerance = 20) {
-  return aStart < bEnd + tolerance && aEnd > bStart - tolerance;
-}
+function snapToGrid(value) { return Math.round(value / GRID) * GRID; }
+function rangesOverlap(aStart, aEnd, bStart, bEnd, tolerance = 20) { return aStart < bEnd + tolerance && aEnd > bStart - tolerance; }
 
 function getPieceSize(type, rotation) {
-  if (type === "cube") {
-    const cubeSize = 15 * SCALE;
-    return { width: cubeSize, height: cubeSize };
-  }
-
+  if (type === "cube") return { width: 15 * SCALE, height: 15 * SCALE };
   const length = Number(type) * SCALE;
   const isVertical = rotation === 90 || rotation === 270;
-
-  return isVertical
-    ? { width: THICKNESS, height: length }
-    : { width: length, height: THICKNESS };
+  return isVertical ? { width: THICKNESS, height: length } : { width: length, height: THICKNESS };
 }
 
 function getBounds(piece, x = piece.x, y = piece.y) {
   const { width, height } = getPieceSize(piece.type, piece.rotation);
-  return {
-    x,
-    y,
-    width,
-    height,
-    left: x,
-    right: x + width,
-    top: y,
-    bottom: y + height,
-  };
+  return { x, y, width, height, left: x, right: x + width, top: y, bottom: y + height };
 }
 
 function normalizeRect(rect) {
-  const left = Math.min(rect.x1, rect.x2);
-  const right = Math.max(rect.x1, rect.x2);
-  const top = Math.min(rect.y1, rect.y2);
-  const bottom = Math.max(rect.y1, rect.y2);
-  return {
-    left,
-    right,
-    top,
-    bottom,
-    width: right - left,
-    height: bottom - top,
-  };
+  const left = Math.min(rect.x1, rect.x2), right = Math.max(rect.x1, rect.x2);
+  const top = Math.min(rect.y1, rect.y2), bottom = Math.max(rect.y1, rect.y2);
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
 }
 
-function boundsIntersect(a, b) {
-  return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
-}
+function boundsIntersect(a, b) { return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom); }
 
 function getSelectionBounds(pieces, ids) {
   const selected = pieces.filter((piece) => ids.includes(piece.id));
   if (!selected.length) return null;
-
   const boundsList = selected.map((piece) => getBounds(piece));
   return {
-    left: Math.min(...boundsList.map((b) => b.left)),
-    right: Math.max(...boundsList.map((b) => b.right)),
-    top: Math.min(...boundsList.map((b) => b.top)),
-    bottom: Math.max(...boundsList.map((b) => b.bottom)),
+    left: Math.min(...boundsList.map((b) => b.left)), right: Math.max(...boundsList.map((b) => b.right)),
+    top: Math.min(...boundsList.map((b) => b.top)), bottom: Math.max(...boundsList.map((b) => b.bottom)),
   };
 }
 
 function countPiecesForSelection(pieces, ids) {
   const counts = {};
-  pieces
-    .filter((piece) => ids.includes(piece.id))
-    .forEach((piece) => {
-      counts[piece.type] = (counts[piece.type] || 0) + 1;
-    });
+  pieces.filter((piece) => ids.includes(piece.id)).forEach((piece) => { counts[piece.type] = (counts[piece.type] || 0) + 1; });
   return counts;
 }
 
 function createProjectPayload({ id, name, pieces, zoom }) {
-  return {
-    app: "q15-builder",
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    project: {
-      id: id || Date.now().toString(),
-      name: name || "Novo projeto",
-      pieces,
-      zoom,
-      updatedAt: new Date().toISOString(),
-    },
-  };
+  return { app: "q15-builder", version: 1, exportedAt: new Date().toISOString(), project: { id: id || Date.now().toString(), name: name || "Novo projeto", pieces, zoom, updatedAt: new Date().toISOString() } };
 }
 
-function normalizeMeasure(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-  return Math.round(numeric / 5) * 5;
-}
+function readAutosave() { try { const raw = localStorage.getItem(AUTOSAVE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; } }
+function writeAutosave(project) { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(project)); }
+function normalizeMeasure(value) { const numeric = Number(value); if (!Number.isFinite(numeric) || numeric <= 0) return 0; return Math.round(numeric / 5) * 5; }
 
 function getPreferredWeight(piece) {
-  if (piece === 300) return 100;
-  if (piece === 270) return 95;
-  if (piece === 250) return 90;
-  if (piece === 200) return 85;
-  if (piece === 170) return 80;
-  if (piece === 150) return 75;
-  return 1;
+  if (piece === 300) return 100; if (piece === 270) return 95; if (piece === 250) return 90;
+  if (piece === 200) return 85; if (piece === 170) return 80; if (piece === 150) return 75; return 1;
 }
 
 function getCombinationMetrics(combo) {
   const preferredCount = combo.filter((p) => PREFERRED_PIECES.includes(p)).length;
-  const preferredWeightSum = combo.reduce(
-    (sum, p) => sum + (PREFERRED_PIECES.includes(p) ? getPreferredWeight(p) : 0),
-    0
-  );
+  const preferredWeightSum = combo.reduce((sum, p) => sum + (PREFERRED_PIECES.includes(p) ? getPreferredWeight(p) : 0), 0);
   const totalWeightSum = combo.reduce((sum, p) => sum + getPreferredWeight(p), 0);
   const nonPreferredCount = combo.filter((p) => !PREFERRED_PIECES.includes(p)).length;
-
-  return {
-    preferredCount,
-    preferredWeightSum,
-    totalWeightSum,
-    nonPreferredCount,
-    totalPieces: combo.length,
-  };
+  return { preferredCount, preferredWeightSum, totalWeightSum, nonPreferredCount, totalPieces: combo.length };
 }
 
 function compareCombinationPreference(candidate, best) {
   if (!best) return -1;
-
-  const c = getCombinationMetrics(candidate);
-  const b = getCombinationMetrics(best);
-
-  if (c.preferredCount !== b.preferredCount) {
-    return b.preferredCount - c.preferredCount;
-  }
-
-  if (c.preferredWeightSum !== b.preferredWeightSum) {
-    return b.preferredWeightSum - c.preferredWeightSum;
-  }
-
-  if (c.nonPreferredCount !== b.nonPreferredCount) {
-    return c.nonPreferredCount - b.nonPreferredCount;
-  }
-
-  if (c.totalPieces !== b.totalPieces) {
-    return c.totalPieces - b.totalPieces;
-  }
-
-  if (c.totalWeightSum !== b.totalWeightSum) {
-    return b.totalWeightSum - c.totalWeightSum;
-  }
-
+  const c = getCombinationMetrics(candidate), b = getCombinationMetrics(best);
+  if (c.preferredCount !== b.preferredCount) return b.preferredCount - c.preferredCount;
+  if (c.preferredWeightSum !== b.preferredWeightSum) return b.preferredWeightSum - c.preferredWeightSum;
+  if (c.nonPreferredCount !== b.nonPreferredCount) return c.nonPreferredCount - b.nonPreferredCount;
+  if (c.totalPieces !== b.totalPieces) return c.totalPieces - b.totalPieces;
+  if (c.totalWeightSum !== b.totalWeightSum) return b.totalWeightSum - c.totalWeightSum;
   const candidateSorted = [...candidate].sort((a, b) => getPreferredWeight(b) - getPreferredWeight(a) || b - a);
   const bestSorted = [...best].sort((a, b) => getPreferredWeight(b) - getPreferredWeight(a) || b - a);
-
   for (let i = 0; i < Math.max(candidateSorted.length, bestSorted.length); i += 1) {
-    const candidateValue = candidateSorted[i] || 0;
-    const bestValue = bestSorted[i] || 0;
-
-    const candidateScore = getPreferredWeight(candidateValue);
-    const bestScore = getPreferredWeight(bestValue);
-
-    if (candidateScore !== bestScore) {
-      return bestScore - candidateScore;
-    }
-
-    if (candidateValue !== bestValue) {
-      return bestValue - candidateValue;
-    }
+    const candidateValue = candidateSorted[i] || 0, bestValue = bestSorted[i] || 0;
+    const candidateScore = getPreferredWeight(candidateValue), bestScore = getPreferredWeight(bestValue);
+    if (candidateScore !== bestScore) return bestScore - candidateScore;
+    if (candidateValue !== bestValue) return bestValue - candidateValue;
   }
-
   return 0;
 }
 
 function getBestPieceCombination(target) {
-  const normalizedTarget = normalizeMeasure(target);
-  if (!normalizedTarget) return null;
-
+  const normalizedTarget = normalizeMeasure(target); if (!normalizedTarget) return null;
   const memo = new Map();
-
-  const pieceOrder = [
-    ...PREFERRED_PIECES,
-    ...AVAILABLE_PIECES
-      .filter((p) => !PREFERRED_PIECES.includes(p))
-      .sort((a, b) => b - a),
-  ];
-
+  const pieceOrder = [...PREFERRED_PIECES, ...AVAILABLE_PIECES.filter((p) => !PREFERRED_PIECES.includes(p)).sort((a, b) => b - a)];
   function solve(remaining) {
-    if (remaining === 0) return [];
-    if (remaining < 0) return null;
-    if (memo.has(remaining)) return memo.get(remaining);
-
+    if (remaining === 0) return []; if (remaining < 0) return null; if (memo.has(remaining)) return memo.get(remaining);
     let best = null;
-
     for (const piece of pieceOrder) {
       if (piece > remaining) continue;
-
-      const next = solve(remaining - piece);
-      if (!next) continue;
-
+      const next = solve(remaining - piece); if (!next) continue;
       const candidate = [piece, ...next];
-
-      if (!best || compareCombinationPreference(candidate, best) < 0) {
-        best = candidate;
-      }
+      if (!best || compareCombinationPreference(candidate, best) < 0) best = candidate;
     }
-
-    memo.set(remaining, best);
-    return best;
+    memo.set(remaining, best); return best;
   }
-
   return solve(normalizedTarget);
 }
 
 function distributeValueInSteps(total, parts) {
-  if (parts <= 0) return [];
-  if (parts === 1) return [total];
-
+  if (parts <= 0) return []; if (parts === 1) return [total];
   const base = Math.floor(total / parts / 5) * 5;
   const result = Array(parts).fill(base);
-  let used = base * parts;
-  let remainder = total - used;
-
-  let index = 0;
-  while (remainder > 0) {
-    result[index] += 5;
-    remainder -= 5;
-    index = (index + 1) % parts;
-  }
-
+  let used = base * parts, remainder = total - used, index = 0;
+  while (remainder > 0) { result[index] += 5; remainder -= 5; index = (index + 1) % parts; }
   return result;
 }
 
 function getBayCountForWidth(totalWidthCm) {
   const normalizedWidth = normalizeMeasure(totalWidthCm);
-  if (!normalizedWidth || normalizedWidth < 30) return 1;
-
-  if (normalizedWidth <= 500) {
-    return 1;
-  }
-
+  if (!normalizedWidth || normalizedWidth < 30) return 1; if (normalizedWidth <= 500) return 1;
   let bayCount = normalizedWidth >= 600 ? 2 : 1;
-
-  while ((normalizedWidth - 15) / bayCount > 500) {
-    bayCount += 1;
-  }
-
+  while ((normalizedWidth - 15) / bayCount > 500) bayCount += 1;
   while (bayCount > 2 && (normalizedWidth - 15) / bayCount < 400) {
-    bayCount -= 1;
-    if ((normalizedWidth - 15) / bayCount > 500) {
-      bayCount += 1;
-      break;
-    }
+    bayCount -= 1; if ((normalizedWidth - 15) / bayCount > 500) { bayCount += 1; break; }
   }
-
   return Math.max(1, bayCount);
 }
 
 function getHorizontalBayPlans(totalWidthCm) {
-  const normalizedWidth = normalizeMeasure(totalWidthCm);
-  if (!normalizedWidth || normalizedWidth < 30) return null;
-
-  const bayCount = getBayCountForWidth(normalizedWidth);
-  const columnCount = bayCount + 1;
-
-  const totalHorizontalMetal = normalizedWidth - columnCount * 15;
-  if (totalHorizontalMetal <= 0) return null;
-
+  const normalizedWidth = normalizeMeasure(totalWidthCm); if (!normalizedWidth || normalizedWidth < 30) return null;
+  const bayCount = getBayCountForWidth(normalizedWidth), columnCount = bayCount + 1;
+  const totalHorizontalMetal = normalizedWidth - columnCount * 15; if (totalHorizontalMetal <= 0) return null;
   const bayMetalLengths = distributeValueInSteps(totalHorizontalMetal, bayCount);
   const bayPlans = [];
-
   for (const metalLength of bayMetalLengths) {
-    const plan = getBestPieceCombination(metalLength);
-    if (!plan) return null;
-
-    bayPlans.push({
-      metalLength,
-      plan,
-    });
+    const plan = getBestPieceCombination(metalLength); if (!plan) return null; bayPlans.push({ metalLength, plan });
   }
-
-  return {
-    bayCount,
-    columnCount,
-    bayPlans,
-  };
+  return { bayCount, columnCount, bayPlans };
 }
 
 function getNextAutoOrigin(pieces) {
-  if (!pieces.length) {
-    return { x: 600, y: 300 };
-  }
-
-  const bounds = pieces.map((piece) => getBounds(piece));
-  const maxRight = Math.max(...bounds.map((b) => b.right));
-  return {
-    x: snapToGrid(maxRight + 220),
-    y: 300,
-  };
+  if (!pieces.length) return { x: 600, y: 300 };
+  const bounds = pieces.map((piece) => getBounds(piece)), maxRight = Math.max(...bounds.map((b) => b.right));
+  return { x: snapToGrid(maxRight + 220), y: 300 };
 }
 
 function applyMagneticSnap(rawX, rawY, movingPiece, pieces) {
-  let snappedX = snapToGrid(rawX);
-  let snappedY = snapToGrid(rawY);
-
+  let snappedX = snapToGrid(rawX), snappedY = snapToGrid(rawY);
   const movingBounds = getBounds(movingPiece, snappedX, snappedY);
-  let bestX = { distance: Infinity, value: snappedX };
-  let bestY = { distance: Infinity, value: snappedY };
+  let bestX = { distance: Infinity, value: snappedX }, bestY = { distance: Infinity, value: snappedY };
 
   for (const other of pieces) {
     if (other.id === movingPiece.id) continue;
-
     const otherBounds = getBounds(other);
-
-    const verticalMatch = rangesOverlap(
-      movingBounds.top,
-      movingBounds.bottom,
-      otherBounds.top,
-      otherBounds.bottom,
-      25
-    );
-
-    const horizontalMatch = rangesOverlap(
-      movingBounds.left,
-      movingBounds.right,
-      otherBounds.left,
-      otherBounds.right,
-      25
-    );
+    const verticalMatch = rangesOverlap(movingBounds.top, movingBounds.bottom, otherBounds.top, otherBounds.bottom, 25);
+    const horizontalMatch = rangesOverlap(movingBounds.left, movingBounds.right, otherBounds.left, otherBounds.right, 25);
 
     if (verticalMatch) {
-      const xCandidates = [
-        otherBounds.left,
-        otherBounds.right,
-        otherBounds.left - movingBounds.width,
-        otherBounds.right - movingBounds.width,
-      ];
-
-      for (const candidate of xCandidates) {
-        const distance = Math.abs(snappedX - candidate);
-        if (distance < bestX.distance && distance <= SNAP_DISTANCE) {
-          bestX = { distance, value: candidate };
-        }
-      }
+      const xCandidates = [otherBounds.left, otherBounds.right, otherBounds.left - movingBounds.width, otherBounds.right - movingBounds.width];
+      for (const candidate of xCandidates) { const distance = Math.abs(snappedX - candidate); if (distance < bestX.distance && distance <= SNAP_DISTANCE) bestX = { distance, value: candidate }; }
     }
-
     if (horizontalMatch) {
-      const yCandidates = [
-        otherBounds.top,
-        otherBounds.bottom,
-        otherBounds.top - movingBounds.height,
-        otherBounds.bottom - movingBounds.height,
-      ];
-
-      for (const candidate of yCandidates) {
-        const distance = Math.abs(snappedY - candidate);
-        if (distance < bestY.distance && distance <= SNAP_DISTANCE) {
-          bestY = { distance, value: candidate };
-        }
-      }
+      const yCandidates = [otherBounds.top, otherBounds.bottom, otherBounds.top - movingBounds.height, otherBounds.bottom - movingBounds.height];
+      for (const candidate of yCandidates) { const distance = Math.abs(snappedY - candidate); if (distance < bestY.distance && distance <= SNAP_DISTANCE) bestY = { distance, value: candidate }; }
     }
   }
-
   if (bestX.distance !== Infinity) snappedX = bestX.value;
   if (bestY.distance !== Infinity) snappedY = bestY.value;
-
-  return {
-    x: snapToGrid(snappedX),
-    y: snapToGrid(snappedY),
-  };
+  return { x: snapToGrid(snappedX), y: snapToGrid(snappedY) };
 }
 
-function getViewportInfo() {
-  if (typeof window === "undefined") {
-    return { isMobile: false, isTablet: false, width: 1440 };
-  }
-
-  const width = window.innerWidth;
-  return {
-    width,
-    isMobile: width <= 900,
-    isTablet: width > 900 && width <= 1280,
-  };
-}
-
-function getDistance(t1, t2) {
-  const dx = t1.clientX - t2.clientX;
-  const dy = t1.clientY - t2.clientY;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function getMidpoint(t1, t2) {
-  return {
-    x: (t1.clientX + t2.clientX) / 2,
-    y: (t1.clientY + t2.clientY) / 2,
-  };
-}
-
-const palette = {
-  bg: "#08101f",
-  bg2: "#0d172b",
-  panel: "rgba(15, 23, 42, 0.92)",
-  panel2: "rgba(17, 26, 45, 0.96)",
-  border: "#233455",
-  borderSoft: "#2e446b",
-  text: "#ffffff",
-  textSoft: "#9fb0d1",
-  primary: "#3b82f6",
-  canvas: "#eef3fa",
-};
-
-const inputStyle = {
-  width: "100%",
-  boxSizing: "border-box",
-  borderRadius: 12,
-  border: `1px solid ${palette.borderSoft}`,
-  background: "#0b1325",
-  color: "#fff",
-  padding: "12px 14px",
-  outline: "none",
-  fontSize: 14,
-};
-
-const buttonBase = {
-  border: "1px solid transparent",
-  borderRadius: 12,
-  cursor: "pointer",
-  fontWeight: 700,
-};
-
-const smallButtonStyle = {
-  ...buttonBase,
-  padding: "10px 12px",
-  border: `1px solid ${palette.border}`,
-  background: "#16213b",
-  color: "#fff",
-  fontSize: 12,
-};
-
-const sidebarButtonStyle = {
-  ...buttonBase,
-  padding: "12px 14px",
-  textAlign: "left",
-  borderRadius: 14,
-  border: `1px solid ${palette.border}`,
-  background: "#16213b",
-  color: "#fff",
-  fontWeight: 700,
-};
-
-const controlButtonStyle = {
-  ...buttonBase,
-  padding: "10px 14px",
-  borderRadius: 12,
-  border: `1px solid ${palette.border}`,
-  background: "#0f172a",
-  color: "#fff",
-  fontWeight: 700,
-};
-
-function SectionCard({ title, subtitle, children }) {
-  return (
-    <div
-      style={{
-        marginBottom: 16,
-        padding: 14,
-        borderRadius: 18,
-        background: palette.panel2,
-        border: `1px solid ${palette.border}`,
-        backdropFilter: "blur(10px)",
-      }}
-    >
-      {(title || subtitle) && (
-        <div style={{ marginBottom: 10 }}>
-          {title && (
-            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: subtitle ? 4 : 0 }}>
-              {title}
-            </div>
-          )}
-          {subtitle && (
-            <div style={{ fontSize: 12, color: palette.textSoft, lineHeight: 1.5 }}>
-              {subtitle}
-            </div>
-          )}
-        </div>
-      )}
-      {children}
-    </div>
-  );
-}
-
-function SummaryLines({ counts }) {
-  return (
-    <div style={{ fontSize: 13, color: "#d7e1f7", lineHeight: 1.8 }}>
-      {AVAILABLE_PIECES.map((size) => (
-        <div key={size}>
-          Peça {size}: <strong>{counts[String(size)] || 0}</strong>
-        </div>
-      ))}
-      <div>
-        Cubo: <strong>{counts.cube || 0}</strong>
-      </div>
-    </div>
-  );
-}
-
+// ============================================================================
+// COMPONENTE PRINCIPAL
+// ============================================================================
 export default function App() {
   const boardRef = useRef(null);
   const fileInputRef = useRef(null);
-  const pinchStateRef = useRef(null);
-  const boardTouchRef = useRef({ mode: null, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
 
   const [pieces, setPieces] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedBoxIds, setSelectedBoxIds] = useState([]);
   const [zoom, setZoom] = useState(1);
   const [projectName, setProjectName] = useState("Novo projeto");
-  const [currentProjectId, setCurrentProjectId] = useState(Date.now().toString());
+  const [currentProjectId, setCurrentProjectId] = useState(null);
   const [selectionRect, setSelectionRect] = useState(null);
   const [autoWidth, setAutoWidth] = useState("");
   const [autoHeight, setAutoHeight] = useState("");
-  const [viewport, setViewport] = useState(getViewportInfo());
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const isSpacePressedRef = useRef(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, left: 0, top: 0 });
 
-  const { isMobile, isTablet } = viewport;
-  const sidebarWidth = isMobile ? Math.min(360, viewport.width * 0.88) : isTablet ? 320 : 360;
-  const topBarHeight = isMobile ? 64 : 72;
-  const bottomToolbarHeight = isMobile ? 82 : 0;
-
   useEffect(() => {
-    function handleResize() {
-      setViewport(getViewportInfo());
+    const autosave = readAutosave();
+    if (autosave?.project) {
+      setPieces(autosave.project.pieces || []); setZoom(autosave.project.zoom || 1);
+      setProjectName(autosave.project.name || "Novo projeto"); setCurrentProjectId(autosave.project.id || null);
     }
-
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  useEffect(() => {
-    if (!isMobile) {
-      setSidebarOpen(false);
-    }
-  }, [isMobile]);
-
-  const currentProject = useMemo(
-    () =>
-      createProjectPayload({
-        id: currentProjectId,
-        name: projectName,
-        pieces,
-        zoom,
-      }),
-    [currentProjectId, projectName, pieces, zoom]
-  );
+  const currentProject = useMemo(() => createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom }), [currentProjectId, projectName, pieces, zoom]);
+  useEffect(() => { writeAutosave(currentProject); }, [currentProject]);
 
   const counts = useMemo(() => {
-    const acc = {};
-    pieces.forEach((piece) => {
-      acc[piece.type] = (acc[piece.type] || 0) + 1;
-    });
-    return acc;
+    const acc = {}; pieces.forEach((piece) => { acc[piece.type] = (acc[piece.type] || 0) + 1; }); return acc;
   }, [pieces]);
 
-  const selectedBoxBounds = useMemo(
-    () => getSelectionBounds(pieces, selectedBoxIds),
-    [pieces, selectedBoxIds]
-  );
-
-  const selectedBoxCounts = useMemo(
-    () => countPiecesForSelection(pieces, selectedBoxIds),
-    [pieces, selectedBoxIds]
-  );
+  const selectedBoxBounds = useMemo(() => getSelectionBounds(pieces, selectedBoxIds), [pieces, selectedBoxIds]);
+  const selectedBoxCounts = useMemo(() => countPiecesForSelection(pieces, selectedBoxIds), [pieces, selectedBoxIds]);
 
   function handleGenerateAutomaticBox() {
-    const widthCm = normalizeMeasure(autoWidth);
-    const heightCm = normalizeMeasure(autoHeight);
-
-    if (!widthCm || !heightCm) {
-      alert("Preencha largura e altura válidas em cm.");
-      return;
-    }
-
-    if (widthCm < 30 || heightCm < 30) {
-      alert("A medida mínima externa do box deve ser 30 cm, por causa dos cubos.");
-      return;
-    }
-
-    const cubeCm = 15;
-    const cubePx = cubeCm * SCALE;
-
-    const verticalMetalCm = heightCm - 30;
-    const columnPiecesPlan = getBestPieceCombination(verticalMetalCm);
-
-    if (!columnPiecesPlan) {
-      alert("Não foi possível montar essa altura com as peças disponíveis.");
-      return;
-    }
-
+    const widthCm = normalizeMeasure(autoWidth); const heightCm = normalizeMeasure(autoHeight);
+    if (!widthCm || !heightCm) return alert("Preencha largura e altura válidas em cm.");
+    if (widthCm < 30 || heightCm < 30) return alert("A medida mínima externa do box deve ser 30 cm.");
+    const cubeCm = 15; const cubePx = cubeCm * SCALE;
+    const verticalMetalCm = heightCm - 30; const columnPiecesPlan = getBestPieceCombination(verticalMetalCm);
+    if (!columnPiecesPlan) return alert("Não foi possível montar essa altura.");
     const horizontalPlan = getHorizontalBayPlans(widthCm);
-
-    if (!horizontalPlan) {
-      alert("Não foi possível montar essa largura com as peças disponíveis.");
-      return;
-    }
+    if (!horizontalPlan) return alert("Não foi possível montar essa largura.");
 
     const origin = getNextAutoOrigin(pieces);
-    const createdPieces = [];
-    const createdIds = [];
-
+    const createdPieces = []; const createdIds = [];
     const makePiece = (type, x, y, rotation = 0) => {
-      const newPiece = {
-        id: Date.now() + Math.random() + createdPieces.length,
-        type: String(type),
-        x: snapToGrid(x),
-        y: snapToGrid(y),
-        rotation,
-      };
-      createdPieces.push(newPiece);
-      createdIds.push(newPiece.id);
-      return newPiece;
+      const newPiece = { id: Date.now() + Math.random() + createdPieces.length, type: String(type), x: snapToGrid(x), y: snapToGrid(y), rotation };
+      createdPieces.push(newPiece); createdIds.push(newPiece.id); return newPiece;
     };
 
-    const topY = origin.y;
-    const bottomY = origin.y + (heightCm - cubeCm) * SCALE;
+    const topY = origin.y; const bottomY = origin.y + (heightCm - cubeCm) * SCALE;
+    const columnXPositions = [origin.x]; let runningColumnX = origin.x;
+    horizontalPlan.bayPlans.forEach((bay) => { runningColumnX += (bay.metalLength + cubeCm) * SCALE; columnXPositions.push(snapToGrid(runningColumnX)); });
+    columnXPositions[columnXPositions.length - 1] = snapToGrid(origin.x + (widthCm - cubeCm) * SCALE);
 
-    const columnXPositions = [origin.x];
-    let runningColumnX = origin.x;
-
-    horizontalPlan.bayPlans.forEach((bay) => {
-      runningColumnX += (bay.metalLength + cubeCm) * SCALE;
-      columnXPositions.push(snapToGrid(runningColumnX));
-    });
-
-    const expectedLastX = origin.x + (widthCm - cubeCm) * SCALE;
-    const lastIndex = columnXPositions.length - 1;
-    columnXPositions[lastIndex] = snapToGrid(expectedLastX);
-
-    columnXPositions.forEach((cubeX) => {
-      makePiece("cube", cubeX, topY, 0);
-      makePiece("cube", cubeX, bottomY, 0);
-    });
-
+    columnXPositions.forEach((cubeX) => { makePiece("cube", cubeX, topY, 0); makePiece("cube", cubeX, bottomY, 0); });
     columnXPositions.forEach((cubeX) => {
       let currentY = topY + cubePx;
-      columnPiecesPlan.forEach((size) => {
-        makePiece(String(size), cubeX, currentY, 90);
-        currentY += size * SCALE;
-      });
+      columnPiecesPlan.forEach((size) => { makePiece(String(size), cubeX, currentY, 90); currentY += size * SCALE; });
     });
-
     horizontalPlan.bayPlans.forEach((bay, index) => {
       const startX = columnXPositions[index] + cubePx;
-
-      let runningTopX = startX;
-      bay.plan.forEach((size) => {
-        makePiece(String(size), runningTopX, topY, 0);
-        runningTopX += size * SCALE;
-      });
-
-      let runningBottomX = startX;
-      bay.plan.forEach((size) => {
-        makePiece(String(size), runningBottomX, bottomY, 0);
-        runningBottomX += size * SCALE;
-      });
+      let runningTopX = startX; bay.plan.forEach((size) => { makePiece(String(size), runningTopX, topY, 0); runningTopX += size * SCALE; });
+      let runningBottomX = startX; bay.plan.forEach((size) => { makePiece(String(size), runningBottomX, bottomY, 0); runningBottomX += size * SCALE; });
     });
 
-    setPieces((prev) => [...prev, ...createdPieces]);
-    setSelectedId(null);
-    setSelectedBoxIds(createdIds);
-    setSelectionRect(null);
-
-    if (isMobile) setSidebarOpen(false);
+    setPieces((prev) => [...prev, ...createdPieces]); setSelectedId(null); setSelectedBoxIds(createdIds); setSelectionRect(null);
   }
 
-  function addPiece(type) {
-    const newPiece = {
-      id: Date.now() + Math.random(),
-      type,
-      x: 160,
-      y: 160,
-      rotation: 0,
-    };
-
-    setPieces((prev) => [...prev, newPiece]);
-    setSelectedId(newPiece.id);
-    setSelectedBoxIds([]);
-
-    if (isMobile) setSidebarOpen(false);
-  }
-
-  function updatePiece(id, newProps) {
-    setPieces((prev) =>
-      prev.map((piece) => (piece.id === id ? { ...piece, ...newProps } : piece))
-    );
-  }
-
-  function deletePiece(id) {
-    setPieces((prev) => prev.filter((piece) => piece.id !== id));
-    setSelectedId((prev) => (prev === id ? null : prev));
-    setSelectedBoxIds((prev) => prev.filter((pieceId) => pieceId !== id));
-  }
-
-  function goToOrigin() {
-    if (!boardRef.current) return;
-    boardRef.current.scrollTo({ left: 0, top: 0, behavior: "smooth" });
-  }
-
-  function handleNewProject() {
-    const id = Date.now().toString();
-    setPieces([]);
-    setZoom(1);
-    setSelectedId(null);
-    setSelectedBoxIds([]);
-    setSelectionRect(null);
-    setProjectName("Novo projeto");
-    setCurrentProjectId(id);
-    setAutoWidth("");
-    setAutoHeight("");
-
-    if (isMobile) setSidebarOpen(false);
-  }
-
+  function addPiece(type) { const newPiece = { id: Date.now() + Math.random(), type, x: 160, y: 160, rotation: 0 }; setPieces((prev) => [...prev, newPiece]); setSelectedId(newPiece.id); setSelectedBoxIds([]); }
+  function updatePiece(id, newProps) { setPieces((prev) => prev.map((piece) => (piece.id === id ? { ...piece, ...newProps } : piece))); }
+  function deletePiece(id) { setPieces((prev) => prev.filter((piece) => piece.id !== id)); setSelectedId((prev) => (prev === id ? null : prev)); setSelectedBoxIds((prev) => prev.filter((pieceId) => pieceId !== id)); }
+  function goToOrigin() { if (boardRef.current) boardRef.current.scrollTo({ left: 0, top: 0, behavior: "smooth" }); }
+  
+  function handleNewProject() { const id = Date.now().toString(); setPieces([]); setZoom(1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName("Novo projeto"); setCurrentProjectId(id); writeAutosave(createProjectPayload({ id, name: "Novo projeto", pieces: [], zoom: 1 })); }
   function handleExportProject() {
-    const payload = createProjectPayload({
-      id: currentProjectId,
-      name: projectName,
-      pieces,
-      zoom,
-    });
-
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const safeName = (projectName || "projeto-q15")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-_]+/gi, "-");
-
-    link.href = url;
-    link.download = `${safeName || "projeto-q15"}.q15.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    const payload = createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom });
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a");
+    const safeName = (projectName || "projeto-q15").trim().toLowerCase().replace(/[^a-z0-9-_]+/gi, "-");
+    link.href = url; link.download = `${safeName}.q15.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
   }
-
-  function handleImportClick() {
-    fileInputRef.current?.click();
-  }
-
+  function handleImportClick() { fileInputRef.current?.click(); }
   function handleImportFile(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(reader.result);
-        const project = parsed?.project || parsed;
-
-        if (!project || !Array.isArray(project.pieces)) {
-          alert("Arquivo inválido para importação.");
-          return;
-        }
-
-        setPieces(project.pieces || []);
-        setZoom(project.zoom || 1);
-        setSelectedId(null);
-        setSelectedBoxIds([]);
-        setSelectionRect(null);
-        setProjectName(project.name || "Projeto importado");
-        setCurrentProjectId(project.id || Date.now().toString());
-
-        if (isMobile) setSidebarOpen(false);
-      } catch {
-        alert("Não foi possível importar este arquivo.");
-      } finally {
-        event.target.value = "";
-      }
-    };
+    const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader();
+    reader.onload = () => { try { const parsed = JSON.parse(reader.result); const project = parsed?.project || parsed; if (!project || !Array.isArray(project.pieces)) return alert("Arquivo inválido."); setPieces(project.pieces || []); setZoom(project.zoom || 1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName(project.name || "Projeto importado"); setCurrentProjectId(project.id || Date.now().toString()); } catch { alert("Erro ao importar."); } finally { event.target.value = ""; } };
     reader.readAsText(file);
   }
 
+  // ============================================================================
+  // FUNÇÃO DE IMPRESSÃO DE BOX SELECIONADO (RESTAGATADA DO ORIGINAL)
+  // ============================================================================
   function handlePrintSelectedBox() {
     if (!selectedBoxIds.length || !selectedBoxBounds) {
-      alert("Selecione um box antes de imprimir.");
+      alert("Selecione um box arrastando o mouse ao redor dele antes de imprimir.");
       return;
     }
 
@@ -935,21 +405,16 @@ export default function App() {
     printWindow.document.write(`
       <html>
         <head>
-          <title>Impressão do Box</title>
+          <title>Impressão do Box - Go Print</title>
           <style>
             @page { size: A4 landscape; margin: 8mm; }
             * { box-sizing: border-box; }
-            html, body {
-              margin: 0; padding: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif;
-            }
+            html, body { margin: 0; padding: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif; }
             .page { width: 100%; display: flex; flex-direction: column; gap: 10px; }
-            .header { display: flex; justify-content: flex-start; align-items: flex-start; gap: 16px; }
+            .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
             .title { font-size: 20px; font-weight: 700; margin: 0; }
             .subtitle { margin-top: 3px; font-size: 11px; color: #475569; }
-            .drawing-area {
-              width: 100%; height: 140mm; border: 1px solid #cbd5e1; border-radius: 10px;
-              background: #ffffff; padding: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden;
-            }
+            .drawing-area { width: 100%; height: 130mm; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
             .drawing-frame { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
             .drawing-svg { width: 100%; height: 100%; }
             .summary-wrap { border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px; background: #fff; }
@@ -957,6 +422,7 @@ export default function App() {
             .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 14px; }
             .summary-item { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 3px; font-size: 12px; }
             .summary-item strong { font-size: 12px; }
+            @media print { .page { break-inside: avoid; } }
           </style>
         </head>
         <body>
@@ -964,25 +430,25 @@ export default function App() {
             <div class="header">
               <div>
                 <h1 class="title">${esc(projectName || "Projeto Q15")}</h1>
-                <div class="subtitle">Impressão do box selecionado</div>
+                <div class="subtitle">Sistema de Box da Go Print - Desenho Técnico</div>
               </div>
             </div>
             <div class="drawing-area">
               <div class="drawing-frame">
-                <div class="drawing-svg">${svgMarkup}</div>
+                <div class="drawing-svg">
+                  ${svgMarkup}
+                </div>
               </div>
             </div>
             <div class="summary-wrap">
-              <h2 class="summary-title">Resumo de peças usadas</h2>
+              <h2 class="summary-title">Resumo de peças do Box</h2>
               <div class="summary-grid">
                 ${summaryRows || '<div class="summary-item"><span>Nenhuma peça</span><strong>0</strong></div>'}
               </div>
             </div>
           </div>
           <script>
-            window.onload = () => {
-              setTimeout(() => window.print(), 250);
-            };
+            window.onload = () => { setTimeout(() => window.print(), 250); };
           </script>
         </body>
       </html>
@@ -991,1092 +457,358 @@ export default function App() {
   }
 
   function startGroupMove(e) {
-    const board = boardRef.current;
-    if (!board || !selectedBoxIds.length) return;
-
-    const rect = board.getBoundingClientRect();
-    const startX = (e.clientX - rect.left + board.scrollLeft) / zoom;
-    const startY = (e.clientY - rect.top + board.scrollTop) / zoom;
-
+    const board = boardRef.current; if (!board || !selectedBoxIds.length) return;
+    const rect = board.getBoundingClientRect(); const startX = (e.clientX - rect.left + board.scrollLeft) / zoom; const startY = (e.clientY - rect.top + board.scrollTop) / zoom;
     const original = pieces.map((p) => ({ id: p.id, x: p.x, y: p.y }));
-
     function handleMove(ev) {
-      const currentX = (ev.clientX - rect.left + board.scrollLeft) / zoom;
-      const currentY = (ev.clientY - rect.top + board.scrollTop) / zoom;
-
-      const dx = snapToGrid(currentX - startX);
-      const dy = snapToGrid(currentY - startY);
-
-      setPieces((prev) =>
-        prev.map((p) => {
-          if (!selectedBoxIds.includes(p.id)) return p;
-          const base = original.find((o) => o.id === p.id);
-          return {
-            ...p,
-            x: base.x + dx,
-            y: base.y + dy,
-          };
-        })
-      );
+      const currentX = (ev.clientX - rect.left + board.scrollLeft) / zoom; const currentY = (ev.clientY - rect.top + board.scrollTop) / zoom;
+      const dx = snapToGrid(currentX - startX), dy = snapToGrid(currentY - startY);
+      setPieces((prev) => prev.map((p) => { if (!selectedBoxIds.includes(p.id)) return p; const base = original.find((o) => o.id === p.id); return { ...p, x: base.x + dx, y: base.y + dy }; }));
     }
-
-    function handleUp() {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    }
-
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
+    function handleUp() { window.removeEventListener("mousemove", handleMove); window.removeEventListener("mouseup", handleUp); }
+    window.addEventListener("mousemove", handleMove); window.addEventListener("mouseup", handleUp);
   }
 
   useEffect(() => {
-    function handleKeyDown(e) {
-      if (e.code === "Space") {
-        e.preventDefault();
-        isSpacePressedRef.current = true;
-      }
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+    function handleKeyDown(e) { 
+      if (e.code === "Space") { e.preventDefault(); isSpacePressedRef.current = true; } 
+      if (e.key === "Delete" && selectedId) { e.preventDefault(); deletePiece(selectedId); } 
+      
+      // Atalho de impressão atualizado para aceitar Ctrl+P ou Alt+P
+      if ((e.ctrlKey || e.metaKey || e.altKey) && e.key.toLowerCase() === "p") {
         e.preventDefault();
         handlePrintSelectedBox();
       }
-
-      if (e.key === "Delete" && selectedId) {
-        e.preventDefault();
-        deletePiece(selectedId);
-      }
-
-      if (e.key === "PageUp") {
-        e.preventDefault();
-        setZoom((z) => Math.min(z + 0.1, 2));
-      }
-
-      if (e.key === "PageDown") {
-        e.preventDefault();
-        setZoom((z) => Math.max(z - 0.1, 0.08));
-      }
-
-      if (e.key === "Escape" && isMobile) {
-        setSidebarOpen(false);
-      }
     }
-
-    function handleKeyUp(e) {
-      if (e.code === "Space") {
-        isSpacePressedRef.current = false;
-        isPanningRef.current = false;
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-    };
-  }, [selectedId, selectedBoxIds, pieces, projectName, selectedBoxBounds, selectedBoxCounts, isMobile]);
+    function handleKeyUp(e) { if (e.code === "Space") { isSpacePressedRef.current = false; isPanningRef.current = false; } }
+    window.addEventListener("keydown", handleKeyDown); window.addEventListener("keyup", handleKeyUp); return () => { window.removeEventListener("keydown", handleKeyDown); window.removeEventListener("keyup", handleKeyUp); };
+  }, [selectedId, pieces, selectedBoxIds]); // Atualizado as dependências do hook para a impressão pegar os dados frescos
 
   useEffect(() => {
-    const board = boardRef.current;
-    if (!board) return;
-
+    const board = boardRef.current; if (!board) return;
     function handleWheel(e) {
-      if (!e.altKey) return;
-      e.preventDefault();
-
-      const rect = board.getBoundingClientRect();
-      const pointerX = e.clientX - rect.left;
-      const pointerY = e.clientY - rect.top;
-
+      if (!e.altKey) return; e.preventDefault();
+      const rect = board.getBoundingClientRect(); const pointerX = e.clientX - rect.left; const pointerY = e.clientY - rect.top;
       setZoom((current) => {
-        const next = e.deltaY < 0 ? current + 0.08 : current - 0.08;
-        const clamped = Math.min(2, Math.max(0.08, Number(next.toFixed(2))));
-
-        const worldX = (board.scrollLeft + pointerX) / current;
-        const worldY = (board.scrollTop + pointerY) / current;
-
-        requestAnimationFrame(() => {
-          board.scrollLeft = worldX * clamped - pointerX;
-          board.scrollTop = worldY * clamped - pointerY;
-        });
-
-        return clamped;
+        const next = e.deltaY < 0 ? current + 0.08 : current - 0.08; const clamped = Math.min(2, Math.max(0.08, Number(next.toFixed(2))));
+        const worldX = (board.scrollLeft + pointerX) / current; const worldY = (board.scrollTop + pointerY) / current;
+        requestAnimationFrame(() => { board.scrollLeft = worldX * clamped - pointerX; board.scrollTop = worldY * clamped - pointerY; }); return clamped;
       });
     }
-
-    board.addEventListener("wheel", handleWheel, { passive: false });
-    return () => board.removeEventListener("wheel", handleWheel);
+    board.addEventListener("wheel", handleWheel, { passive: false }); return () => board.removeEventListener("wheel", handleWheel);
   }, []);
 
   function handleBoardMouseDown(e) {
-    if (!boardRef.current) return;
-    const board = boardRef.current;
-
+    if (!boardRef.current) return; const board = boardRef.current;
     if (isSpacePressedRef.current) {
-      e.preventDefault();
-      isPanningRef.current = true;
-
-      panStartRef.current = {
-        x: e.clientX,
-        y: e.clientY,
-        left: board.scrollLeft,
-        top: board.scrollTop,
-      };
-
-      function handleMouseMove(ev) {
-        if (!isPanningRef.current || !boardRef.current) return;
-        const dx = ev.clientX - panStartRef.current.x;
-        const dy = ev.clientY - panStartRef.current.y;
-        boardRef.current.scrollLeft = panStartRef.current.left - dx;
-        boardRef.current.scrollTop = panStartRef.current.top - dy;
-      }
-
-      function handleMouseUp() {
-        isPanningRef.current = false;
-        window.removeEventListener("mousemove", handleMouseMove);
-        window.removeEventListener("mouseup", handleMouseUp);
-      }
-
-      window.addEventListener("mousemove", handleMouseMove);
-      window.addEventListener("mouseup", handleMouseUp);
-      return;
+      e.preventDefault(); isPanningRef.current = true; panStartRef.current = { x: e.clientX, y: e.clientY, left: board.scrollLeft, top: board.scrollTop };
+      function handleMouseMove(ev) { if (!isPanningRef.current || !boardRef.current) return; const dx = ev.clientX - panStartRef.current.x; const dy = ev.clientY - panStartRef.current.y; boardRef.current.scrollLeft = panStartRef.current.left - dx; boardRef.current.scrollTop = panStartRef.current.top - dy; }
+      function handleMouseUp() { isPanningRef.current = false; window.removeEventListener("mousemove", handleMouseMove); window.removeEventListener("mouseup", handleMouseUp); }
+      window.addEventListener("mousemove", handleMouseMove); window.addEventListener("mouseup", handleMouseUp); return;
     }
-
-    const rect = board.getBoundingClientRect();
-    const startX = (e.clientX - rect.left + board.scrollLeft) / zoom;
-    const startY = (e.clientY - rect.top + board.scrollTop) / zoom;
-
-    setSelectedId(null);
-    setSelectedBoxIds([]);
-    setSelectionRect({ x1: startX, y1: startY, x2: startX, y2: startY });
-
-    function handleMouseMove(ev) {
-      const currentX = (ev.clientX - rect.left + board.scrollLeft) / zoom;
-      const currentY = (ev.clientY - rect.top + board.scrollTop) / zoom;
-      setSelectionRect({ x1: startX, y1: startY, x2: currentX, y2: currentY });
-    }
-
+    const rect = board.getBoundingClientRect(); const startX = (e.clientX - rect.left + board.scrollLeft) / zoom; const startY = (e.clientY - rect.top + board.scrollTop) / zoom;
+    setSelectedId(null); setSelectedBoxIds([]); setSelectionRect({ x1: startX, y1: startY, x2: startX, y2: startY });
+    function handleMouseMove(ev) { const currentX = (ev.clientX - rect.left + board.scrollLeft) / zoom; const currentY = (ev.clientY - rect.top + board.scrollTop) / zoom; setSelectionRect({ x1: startX, y1: startY, x2: currentX, y2: currentY }); }
     function handleMouseUp(ev) {
-      const endX = (ev.clientX - rect.left + board.scrollLeft) / zoom;
-      const endY = (ev.clientY - rect.top + board.scrollTop) / zoom;
-      const normalized = normalizeRect({ x1: startX, y1: startY, x2: endX, y2: endY });
-
-      if (normalized.width > 8 || normalized.height > 8) {
-        const ids = pieces
-          .filter((piece) => boundsIntersect(getBounds(piece), normalized))
-          .map((piece) => piece.id);
-
-        setSelectedBoxIds(ids);
-      } else {
-        setSelectedBoxIds([]);
-      }
-
-      setSelectionRect(null);
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
+      const endX = (ev.clientX - rect.left + board.scrollLeft) / zoom; const endY = (ev.clientY - rect.top + board.scrollTop) / zoom; const normalized = normalizeRect({ x1: startX, y1: startY, x2: endX, y2: endY });
+      if (normalized.width > 8 || normalized.height > 8) setSelectedBoxIds(pieces.filter((piece) => boundsIntersect(getBounds(piece), normalized)).map((piece) => piece.id));
+      setSelectionRect(null); window.removeEventListener("mousemove", handleMouseMove); window.removeEventListener("mouseup", handleMouseUp);
     }
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("mousemove", handleMouseMove); window.addEventListener("mouseup", handleMouseUp);
   }
 
-  function handleBoardTouchStart(e) {
-    if (!boardRef.current) return;
-    const board = boardRef.current;
-
-    if (e.touches.length === 2) {
-      const [t1, t2] = e.touches;
-      const rect = board.getBoundingClientRect();
-      const midpoint = getMidpoint(t1, t2);
-
-      pinchStateRef.current = {
-        startDistance: getDistance(t1, t2),
-        startZoom: zoom,
-        worldX: (board.scrollLeft + (midpoint.x - rect.left)) / zoom,
-        worldY: (board.scrollTop + (midpoint.y - rect.top)) / zoom,
-        midpointClientX: midpoint.x,
-        midpointClientY: midpoint.y,
-      };
-
-      boardTouchRef.current.mode = "pinch";
-      return;
-    }
-
-    if (e.touches.length === 1) {
-      const t = e.touches[0];
-      boardTouchRef.current = {
-        mode: "pan",
-        startX: t.clientX,
-        startY: t.clientY,
-        startLeft: board.scrollLeft,
-        startTop: board.scrollTop,
-      };
-    }
-  }
-
-  function handleBoardTouchMove(e) {
-    if (!boardRef.current) return;
-    const board = boardRef.current;
-
-    if (e.touches.length === 2 && pinchStateRef.current) {
-      e.preventDefault();
-
-      const [t1, t2] = e.touches;
-      const rect = board.getBoundingClientRect();
-      const midpoint = getMidpoint(t1, t2);
-      const currentDistance = getDistance(t1, t2);
-
-      setZoom(() => {
-        const rawZoom = pinchStateRef.current.startZoom * (currentDistance / pinchStateRef.current.startDistance);
-        const clamped = Math.min(2, Math.max(0.08, Number(rawZoom.toFixed(2))));
-
-        requestAnimationFrame(() => {
-          board.scrollLeft = pinchStateRef.current.worldX * clamped - (midpoint.x - rect.left);
-          board.scrollTop = pinchStateRef.current.worldY * clamped - (midpoint.y - rect.top);
-        });
-
-        return clamped;
-      });
-
-      return;
-    }
-
-    if (e.touches.length === 1 && boardTouchRef.current.mode === "pan") {
-      const t = e.touches[0];
-      const dx = t.clientX - boardTouchRef.current.startX;
-      const dy = t.clientY - boardTouchRef.current.startY;
-
-      board.scrollLeft = boardTouchRef.current.startLeft - dx;
-      board.scrollTop = boardTouchRef.current.startTop - dy;
-    }
-  }
-
-  function handleBoardTouchEnd() {
-    if (pinchStateRef.current) {
-      pinchStateRef.current = null;
-    }
-
-    if (boardTouchRef.current.mode) {
-      boardTouchRef.current.mode = null;
-    }
-  }
-
-  function renderSidebarContent() {
-    return (
-      <div style={{ padding: isMobile ? 14 : 18 }}>
-        <div
-          style={{
-            marginBottom: 16,
-            padding: 16,
-            borderRadius: 20,
-            background: "linear-gradient(180deg, #16203a 0%, #101827 100%)",
-            border: `1px solid ${palette.border}`,
-            boxShadow: "0 12px 30px rgba(0,0,0,0.22)",
-          }}
-        >
-          <div style={{ fontSize: 22, fontWeight: 800 }}>Editor Q15</div>
-          <div style={{ marginTop: 6, fontSize: 13, color: palette.textSoft, lineHeight: 1.6 }}>
-            Monte a estrutura visualmente e acompanhe o resumo das peças.
-          </div>
-        </div>
-
-        <SectionCard title="Projeto">
-          <label style={{ display: "block", fontSize: 12, color: palette.textSoft, marginBottom: 8 }}>
-            Nome do projeto
-          </label>
-          <input
-            value={projectName}
-            onChange={(e) => setProjectName(e.target.value)}
-            placeholder="Digite o nome do projeto"
-            style={inputStyle}
-          />
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-            <button onClick={handleExportProject} style={smallButtonStyle}>
-              Exportar
-            </button>
-            <button onClick={handleImportClick} style={smallButtonStyle}>
-              Importar
-            </button>
-            <button onClick={handleNewProject} style={smallButtonStyle}>
-              Novo
-            </button>
-          </div>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json,.q15.json"
-            onChange={handleImportFile}
-            style={{ display: "none" }}
-          />
-        </SectionCard>
-
-        <SectionCard title="Seleção de box">
-          <div style={{ fontSize: 12, color: "#d7e1f7", lineHeight: 1.7 }}>
-            Arraste o mouse fora das peças para selecionar um box inteiro.
-            <br />
-            Depois clique em qualquer peça do grupo para mover tudo junto.
-            <br />
-            Ctrl + P imprime apenas o box selecionado + resumo.
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          title="Gerar box automático"
-          subtitle="Digite largura x altura em cm. O sistema mantém a montagem manual e adiciona o box pronto na área."
-        >
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <input
-              value={autoWidth}
-              onChange={(e) => setAutoWidth(e.target.value)}
-              placeholder="Largura (cm)"
-              style={inputStyle}
-            />
-            <input
-              value={autoHeight}
-              onChange={(e) => setAutoHeight(e.target.value)}
-              placeholder="Altura (cm)"
-              style={inputStyle}
-            />
-          </div>
-
-          <button
-            onClick={handleGenerateAutomaticBox}
-            style={{ ...smallButtonStyle, width: "100%", marginTop: 10 }}
-          >
-            Gerar box por medida
-          </button>
-        </SectionCard>
-
-        <SectionCard title="Peças Q15">
-          <div style={{ display: "grid", gap: 8 }}>
-            {AVAILABLE_PIECES.map((size) => (
-              <button
-                key={size}
-                onClick={() => addPiece(String(size))}
-                style={sidebarButtonStyle}
-              >
-                Peça {size}
-              </button>
-            ))}
-            <button onClick={() => addPiece("cube")} style={sidebarButtonStyle}>
-              Cubo 15
-            </button>
-          </div>
-        </SectionCard>
-
-        <SectionCard title="Resumo geral">
-          <SummaryLines counts={counts} />
-        </SectionCard>
-
-        {selectedBoxIds.length > 0 && (
-          <SectionCard title="Resumo do box selecionado">
-            <SummaryLines counts={selectedBoxCounts} />
-          </SectionCard>
-        )}
-
-        <SectionCard title="Atalhos">
-          <div style={{ fontSize: 12, color: palette.textSoft, lineHeight: 1.7 }}>
-            Duplo clique gira
-            <br />
-            Delete apaga a peça selecionada
-            <br />
-            Alt + scroll controla o zoom
-            <br />
-            Pinça no celular controla o zoom
-            <br />
-            Exporte em arquivo para importar depois
-          </div>
-        </SectionCard>
-      </div>
-    );
-  }
-
+  // ============================================================================
+  // RENDERIZAÇÃO BLINDADA (TELA CHEIA FORÇADA)
+  // ============================================================================
   return (
-    <div
-      style={{
-        height: "100dvh",
-        overflow: "hidden",
-        background: palette.bg,
-        color: palette.text,
-        fontFamily: "Arial, sans-serif",
-        position: "relative",
-      }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          background:
-            "radial-gradient(circle at top left, rgba(59,130,246,0.14), transparent 28%), radial-gradient(circle at top right, rgba(99,102,241,0.12), transparent 22%), linear-gradient(180deg, #08101f 0%, #0a1222 100%)",
-          pointerEvents: "none",
-        }}
-      />
+    <>
+      <style>{`
+        /* Reset de tudo para não herdar estilos que quebrem o app */
+        .q15-app-wrapper * {
+          box-sizing: border-box;
+          font-family: 'Inter', -apple-system, sans-serif;
+        }
+        
+        /* A MÁGICA ESTÁ AQUI: Isso tira o app de dentro da div padrão do Vite e toma a tela toda */
+        .q15-app-wrapper {
+          position: fixed; 
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          width: 100vw;
+          height: 100vh;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          background-color: #f1f5f9;
+          z-index: 9999;
+        }
 
-      <div
-        style={{
-          position: "fixed",
-          left: 0,
-          right: 0,
-          top: 0,
-          height: topBarHeight,
-          zIndex: 50,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: isMobile ? "0 12px" : "0 18px",
-          background: "rgba(8, 16, 31, 0.86)",
-          backdropFilter: "blur(14px)",
-          borderBottom: `1px solid ${palette.border}`,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-          {isMobile && (
-            <button
-              onClick={() => setSidebarOpen(true)}
-              style={{
-                ...controlButtonStyle,
-                padding: "10px 12px",
-                minWidth: 44,
-              }}
-            >
-              ☰
-            </button>
-          )}
+        /* Top Bar */
+        .q15-topbar {
+          height: 60px;
+          flex-shrink: 0;
+          background: #0f172a;
+          color: #ffffff;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0 24px;
+          z-index: 10;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
 
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>
-              Q15 Builder
-            </div>
-            <div
-              style={{
-                fontSize: 12,
-                color: palette.textSoft,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                maxWidth: isMobile ? 180 : 320,
-              }}
-            >
-              {projectName || "Novo projeto"}
-            </div>
-          </div>
-        </div>
+        /* Corpo Central (Sidebar + Canvas) */
+        .q15-main-body {
+          display: flex;
+          flex: 1;
+          overflow: hidden; 
+        }
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {!isMobile && (
-            <>
-              <button onClick={handleExportProject} style={smallButtonStyle}>
-                Exportar
+        /* Sidebar Esquerda */
+        .q15-sidebar {
+          width: 300px;
+          flex-shrink: 0;
+          background: #ffffff;
+          border-right: 1px solid #e2e8f0;
+          padding: 20px;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+        }
+
+        /* Área do Canvas */
+        .q15-canvas-container {
+          flex: 1;
+          position: relative;
+          background: #f8fafc;
+          overflow: hidden; 
+        }
+
+        /* Scroll Interno do Canvas (Onde a mágica acontece) */
+        .q15-canvas-scroller {
+          width: 100%;
+          height: 100%;
+          overflow: auto;
+        }
+
+        /* Rodapé de Materiais */
+        .q15-footer {
+          height: 80px;
+          flex-shrink: 0;
+          background: #ffffff;
+          border-top: 1px solid #e2e8f0;
+          display: flex;
+          align-items: center;
+          padding: 0 24px;
+          overflow-x: auto;
+          box-shadow: 0 -1px 3px rgba(0,0,0,0.05);
+        }
+
+        /* Inputs e Botões padronizados */
+        .q15-input {
+          padding: 10px;
+          border: 1px solid #cbd5e1;
+          border-radius: 6px;
+          width: 100%;
+          outline: none;
+          font-size: 14px;
+          color: #0f172a;
+          background: #ffffff;
+        }
+
+        .q15-btn {
+          padding: 10px 14px;
+          border-radius: 6px;
+          border: 1px solid #cbd5e1;
+          background: #ffffff;
+          color: #1e293b; 
+          cursor: pointer;
+          font-weight: 600;
+          font-size: 13px;
+          transition: background 0.2s;
+        }
+        .q15-btn:hover { background: #f1f5f9; }
+
+        .q15-btn-primary {
+          background: #2563eb;
+          color: #ffffff;
+          border: none;
+        }
+        .q15-btn-primary:hover { background: #1d4ed8; }
+
+        /* Botão Destaque para Impressão */
+        .q15-btn-print {
+          background: #10b981;
+          color: #ffffff;
+          border: none;
+          animation: pulse 2s infinite;
+        }
+        .q15-btn-print:hover { background: #059669; animation: none; }
+
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+          70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Responsivo básico */
+        @media (max-width: 768px) {
+          .q15-main-body { flex-direction: column; }
+          .q15-sidebar { width: 100%; max-height: 250px; border-right: none; border-bottom: 1px solid #e2e8f0; }
+        }
+      `}</style>
+
+      <div className="q15-app-wrapper">
+        
+        {/* TOPO */}
+        <header className="q15-topbar">
+          <div style={{ fontWeight: 800, fontSize: "18px", letterSpacing: "1px" }}>Sistema de Box da Go Print</div>
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            
+            {/* BOTÃO INTELIGENTE DE IMPRESSÃO - Só aparece com box selecionado */}
+            {selectedBoxIds.length > 0 && (
+              <button className="q15-btn q15-btn-print" style={{ padding: "8px 16px" }} onClick={handlePrintSelectedBox}>
+                🖨️ Imprimir Seleção (Alt+P)
               </button>
-              <button onClick={handleImportClick} style={smallButtonStyle}>
-                Importar
-              </button>
-            </>
-          )}
-
-          <div
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: `1px solid ${palette.border}`,
-              background: palette.panel,
-              fontSize: 12,
-              color: palette.textSoft,
-            }}
-          >
-            Zoom {(zoom * 100).toFixed(0)}%
-          </div>
-        </div>
-      </div>
-
-      {!isMobile && (
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: topBarHeight,
-            bottom: 0,
-            width: sidebarWidth,
-            background: "rgba(10,17,32,0.84)",
-            borderRight: `1px solid ${palette.border}`,
-            overflowY: "auto",
-            zIndex: 30,
-            backdropFilter: "blur(14px)",
-          }}
-        >
-          {renderSidebarContent()}
-        </div>
-      )}
-
-      {isMobile && sidebarOpen && (
-        <>
-          <div
-            onClick={() => setSidebarOpen(false)}
-            style={{
-              position: "fixed",
-              inset: 0,
-              zIndex: 59,
-              background: "rgba(0,0,0,0.45)",
-            }}
-          />
-          <div
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              bottom: 0,
-              width: sidebarWidth,
-              zIndex: 60,
-              background: "rgba(10,17,32,0.98)",
-              borderRight: `1px solid ${palette.border}`,
-              overflowY: "auto",
-              boxShadow: "20px 0 60px rgba(0,0,0,0.45)",
-            }}
-          >
-            <div
-              style={{
-                position: "sticky",
-                top: 0,
-                zIndex: 2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "14px 14px 10px",
-                background: "rgba(10,17,32,0.98)",
-                borderBottom: `1px solid ${palette.border}`,
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: 16 }}>Menu do projeto</div>
-              <button onClick={() => setSidebarOpen(false)} style={controlButtonStyle}>
-                ✕
-              </button>
-            </div>
-            {renderSidebarContent()}
-          </div>
-        </>
-      )}
-
-      <div
-        ref={boardRef}
-        onMouseDown={handleBoardMouseDown}
-        onTouchStart={handleBoardTouchStart}
-        onTouchMove={handleBoardTouchMove}
-        onTouchEnd={handleBoardTouchEnd}
-        style={{
-          position: "absolute",
-          left: isMobile ? 0 : sidebarWidth,
-          right: 0,
-          top: topBarHeight,
-          bottom: isMobile ? bottomToolbarHeight : 0,
-          overflow: "auto",
-          background: palette.canvas,
-          padding: isMobile ? 12 : 20,
-          cursor: isSpacePressedRef.current
-            ? isPanningRef.current
-              ? "grabbing"
-              : "grab"
-            : "crosshair",
-          touchAction: "none",
-        }}
-      >
-        <div
-          style={{
-            width: 30000 * zoom,
-            height: 8000 * zoom,
-            position: "relative",
-          }}
-        >
-          <div
-            style={{
-              width: 30000,
-              height: 8000,
-              position: "relative",
-              borderRadius: isMobile ? 18 : 24,
-              border: "1px solid #cad4e2",
-              backgroundColor: "#ffffff",
-              backgroundImage:
-                "linear-gradient(rgba(15,23,42,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.05) 1px, transparent 1px)",
-              backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
-              boxShadow: "0 14px 40px rgba(15,23,42,0.10)",
-              transform: `scale(${zoom})`,
-              transformOrigin: "top left",
-            }}
-          >
-            {selectionRect &&
-              (() => {
-                const rect = normalizeRect(selectionRect);
-                return (
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: rect.left,
-                      top: rect.top,
-                      width: rect.width,
-                      height: rect.height,
-                      border: "2px dashed #2563eb",
-                      background: "rgba(37,99,235,0.08)",
-                      pointerEvents: "none",
-                      zIndex: 10,
-                    }}
-                  />
-                );
-              })()}
-
-            {selectedBoxBounds && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: selectedBoxBounds.left - 8,
-                  top: selectedBoxBounds.top - 8,
-                  width: selectedBoxBounds.right - selectedBoxBounds.left + 16,
-                  height: selectedBoxBounds.bottom - selectedBoxBounds.top + 16,
-                  border: "2px solid #2563eb",
-                  background: "rgba(37,99,235,0.04)",
-                  pointerEvents: "none",
-                  zIndex: 9,
-                  boxSizing: "border-box",
-                  borderRadius: 6,
-                }}
-              />
             )}
 
-            {pieces.map((piece) => (
-              <Piece
-                key={piece.id}
-                piece={piece}
-                pieces={pieces}
-                boardRef={boardRef}
-                updatePiece={updatePiece}
-                deletePiece={deletePiece}
-                zoom={zoom}
-                selected={piece.id === selectedId}
-                onSelect={() => setSelectedId(piece.id)}
-                isSpacePressedRef={isSpacePressedRef}
-                selectedBoxIds={selectedBoxIds}
-                startGroupMove={startGroupMove}
-                isMobile={isMobile}
-              />
+            <input 
+              value={projectName} 
+              onChange={(e) => setProjectName(e.target.value)} 
+              style={{ padding: "8px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#ffffff", outline: "none", width: "180px" }} 
+              placeholder="Nome do projeto"
+            />
+            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={handleNewProject}>Novo</button>
+            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={handleImportClick}>Importar</button>
+            <input ref={fileInputRef} type="file" accept=".json,.q15.json" onChange={handleImportFile} style={{ display: "none" }} />
+            <button className="q15-btn q15-btn-primary" style={{ padding: "8px 16px" }} onClick={handleExportProject}>Salvar Arquivo</button>
+          </div>
+        </header>
+
+        {/* ÁREA CENTRAL */}
+        <div className="q15-main-body">
+          
+          {/* BARRA LATERAL */}
+          <aside className="q15-sidebar">
+            <div style={{ marginBottom: "24px" }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "12px", textTransform: "uppercase" }}>DIMENSÕES: GERAR BOX</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "12px" }}>
+                <div>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px" }}>LARGURA X (cm)</div>
+                  <input value={autoWidth} onChange={(e) => setAutoWidth(e.target.value)} className="q15-input" placeholder="Ex: 400" />
+                </div>
+                <div>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px" }}>ALTURA Y (cm)</div>
+                  <input value={autoHeight} onChange={(e) => setAutoHeight(e.target.value)} className="q15-input" placeholder="Ex: 300" />
+                </div>
+              </div>
+              <button className="q15-btn q15-btn-primary" style={{ width: "100%" }} onClick={handleGenerateAutomaticBox}>+ Gerar Box</button>
+            </div>
+
+            <div>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "12px", textTransform: "uppercase" }}>ESTOQUE: PEÇAS AVULSAS</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <button className="q15-btn" style={{ borderColor: "#2563eb", color: "#2563eb", fontWeight: 700, display: "flex", justifyContent: "space-between" }} onClick={() => addPiece("cube")}>
+                  <span>Cubo de Canto (15cm)</span>
+                  <span>+</span>
+                </button>
+                {AVAILABLE_PIECES.map((size) => (
+                  <button key={size} className="q15-btn" style={{ display: "flex", justifyContent: "space-between" }} onClick={() => addPiece(String(size))}>
+                    <span>Treliça Q15 - {size} cm</span>
+                    <span style={{ color: "#94a3b8" }}>+</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+
+          {/* ÁREA DE DESENHO */}
+          <main className="q15-canvas-container">
+            {/* Controles Flutuantes de Zoom */}
+            <div style={{ position: "absolute", right: "20px", top: "20px", zIndex: 20, display: "flex", flexDirection: "column", gap: "6px" }}>
+              <button className="q15-btn" style={{ padding: "8px", width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 4px rgba(0,0,0,0.1)" }} onClick={() => setZoom((z) => Math.min(z + 0.1, 2))}>+</button>
+              <button className="q15-btn" style={{ padding: "8px", width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 4px rgba(0,0,0,0.1)" }} onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))}>-</button>
+              <button className="q15-btn" style={{ padding: "8px 12px", boxShadow: "0 2px 4px rgba(0,0,0,0.1)", fontSize: "11px" }} onClick={goToOrigin}>Reset</button>
+            </div>
+
+            {/* O SCROLL ACONTECE SÓ AQUI */}
+            <div className="q15-canvas-scroller" ref={boardRef} onMouseDown={handleBoardMouseDown} style={{ cursor: isSpacePressedRef.current ? (isPanningRef.current ? "grabbing" : "grab") : "crosshair" }}>
+              <div style={{ width: 30000 * zoom, height: 8000 * zoom, position: "relative" }}>
+                <div style={{
+                  width: 30000, height: 8000, position: "relative", backgroundColor: "#ffffff",
+                  backgroundImage: "linear-gradient(#e2e8f0 1px, transparent 1px), linear-gradient(90deg, #e2e8f0 1px, transparent 1px)",
+                  backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
+                  transform: `scale(${zoom})`, transformOrigin: "top left",
+                }}>
+                  {selectionRect && (() => { const rect = normalizeRect(selectionRect); return <div style={{ position: "absolute", left: rect.left, top: rect.top, width: rect.width, height: rect.height, border: "2px dashed #2563eb", background: "rgba(37,99,235,0.08)", pointerEvents: "none", zIndex: 10 }} />; })()}
+                  {selectedBoxBounds && <div style={{ position: "absolute", left: selectedBoxBounds.left - 8, top: selectedBoxBounds.top - 8, width: selectedBoxBounds.right - selectedBoxBounds.left + 16, height: selectedBoxBounds.bottom - selectedBoxBounds.top + 16, border: "2px solid #2563eb", background: "rgba(37,99,235,0.03)", pointerEvents: "none", zIndex: 9 }} />}
+                  
+                  {pieces.map((piece) => (
+                    <Piece key={piece.id} piece={piece} pieces={pieces} boardRef={boardRef} updatePiece={updatePiece} deletePiece={deletePiece} zoom={zoom} selected={piece.id === selectedId} onSelect={() => setSelectedId(piece.id)} isSpacePressedRef={isSpacePressedRef} selectedBoxIds={selectedBoxIds} startGroupMove={startGroupMove} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+
+        {/* RODAPÉ: LISTA DE MATERIAIS */}
+        <footer className="q15-footer">
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#475569", marginRight: "32px", letterSpacing: "0.5px" }}>LISTA DE MATERIAIS</div>
+          
+          <div style={{ display: "flex", gap: "12px" }}>
+            <div style={{ border: "1px solid #e2e8f0", padding: "6px 16px", borderRadius: "6px", background: "#f8fafc", minWidth: "100px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: "11px", color: "#64748b" }}>Cubo 15cm</span>
+              <span style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{counts.cube || 0}</span>
+            </div>
+
+            {AVAILABLE_PIECES.filter(size => counts[String(size)] > 0).map(size => (
+              <div key={size} style={{ border: "1px solid #e2e8f0", padding: "6px 16px", borderRadius: "6px", background: "#f8fafc", minWidth: "100px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: "11px", color: "#64748b" }}>Treliça {size}cm</span>
+                <span style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{counts[String(size)]}</span>
+              </div>
             ))}
           </div>
-        </div>
+        </footer>
+
       </div>
-
-      {!isMobile && (
-        <div
-          style={{
-            position: "fixed",
-            right: 20,
-            bottom: 20,
-            background: "rgba(17,24,39,0.94)",
-            border: `1px solid ${palette.border}`,
-            padding: 10,
-            borderRadius: 16,
-            display: "flex",
-            gap: 8,
-            zIndex: 80,
-            boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
-            backdropFilter: "blur(12px)",
-          }}
-        >
-          <button
-            onClick={() => setZoom((z) => Math.min(z + 0.1, 2))}
-            style={controlButtonStyle}
-          >
-            +
-          </button>
-          <button
-            onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))}
-            style={controlButtonStyle}
-          >
-            -
-          </button>
-          <button onClick={() => setZoom(1)} style={controlButtonStyle}>
-            Reset
-          </button>
-          <button onClick={goToOrigin} style={controlButtonStyle}>
-            Início
-          </button>
-          <button onClick={handleNewProject} style={controlButtonStyle}>
-            Novo
-          </button>
-        </div>
-      )}
-
-      {isMobile && (
-        <div
-          style={{
-            position: "fixed",
-            left: 10,
-            right: 10,
-            bottom: 10,
-            zIndex: 80,
-            display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
-            gap: 8,
-            padding: 10,
-            borderRadius: 18,
-            background: "rgba(17,24,39,0.96)",
-            border: `1px solid ${palette.border}`,
-            boxShadow: "0 14px 35px rgba(0,0,0,0.35)",
-            backdropFilter: "blur(12px)",
-          }}
-        >
-          <button onClick={() => setSidebarOpen(true)} style={controlButtonStyle}>
-            Menu
-          </button>
-          <button onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))} style={controlButtonStyle}>
-            -
-          </button>
-          <button onClick={() => setZoom((z) => Math.min(z + 0.1, 2))} style={controlButtonStyle}>
-            +
-          </button>
-          <button onClick={() => setZoom(1)} style={controlButtonStyle}>
-            100%
-          </button>
-          <button onClick={handleNewProject} style={controlButtonStyle}>
-            Novo
-          </button>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
-function Piece({
-  piece,
-  pieces,
-  boardRef,
-  updatePiece,
-  deletePiece,
-  selected,
-  onSelect,
-  zoom,
-  isSpacePressedRef,
-  selectedBoxIds,
-  startGroupMove,
-  isMobile,
-}) {
+// ============================================================================
+// COMPONENTE PEÇA
+// ============================================================================
+function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, onSelect, zoom, isSpacePressedRef, selectedBoxIds, startGroupMove }) {
   const offsetRef = useRef({ x: 0, y: 0 });
-  const touchStartRef = useRef({ x: 0, y: 0, pieceX: 0, pieceY: 0 });
   const { width, height } = getPieceSize(piece.type, piece.rotation);
   const isCube = piece.type === "cube";
   const isVertical = piece.rotation === 90 || piece.rotation === 270;
 
   function handleMouseDown(e) {
-    if (isSpacePressedRef.current) return;
-
-    e.preventDefault();
-    e.stopPropagation();
-    onSelect();
-
-    if (selectedBoxIds.includes(piece.id)) {
-      startGroupMove(e);
-      return;
-    }
-
-    const board = boardRef.current;
-    if (!board) return;
-
-    const boardRect = board.getBoundingClientRect();
-
-    offsetRef.current = {
-      x: (e.clientX - boardRect.left + board.scrollLeft) / zoom - piece.x,
-      y: (e.clientY - boardRect.top + board.scrollTop) / zoom - piece.y,
-    };
-
-    function handleMouseMove(ev) {
-      const rawX =
-        (ev.clientX - boardRect.left + board.scrollLeft) / zoom - offsetRef.current.x;
-      const rawY =
-        (ev.clientY - boardRect.top + board.scrollTop) / zoom - offsetRef.current.y;
-
-      const snapped = applyMagneticSnap(rawX, rawY, piece, pieces);
-      updatePiece(piece.id, {
-        x: snapped.x,
-        y: snapped.y,
-      });
-    }
-
-    function handleMouseUp() {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    }
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+    if (isSpacePressedRef.current) return; e.preventDefault(); e.stopPropagation(); onSelect();
+    if (selectedBoxIds.includes(piece.id)) { startGroupMove(e); return; }
+    const board = boardRef.current; if (!board) return; const boardRect = board.getBoundingClientRect();
+    offsetRef.current = { x: (e.clientX - boardRect.left + board.scrollLeft) / zoom - piece.x, y: (e.clientY - boardRect.top + board.scrollTop) / zoom - piece.y };
+    function handleMouseMove(ev) { const rawX = (ev.clientX - boardRect.left + board.scrollLeft) / zoom - offsetRef.current.x; const rawY = (ev.clientY - boardRect.top + board.scrollTop) / zoom - offsetRef.current.y; const snapped = applyMagneticSnap(rawX, rawY, piece, pieces); updatePiece(piece.id, { x: snapped.x, y: snapped.y }); }
+    function handleMouseUp() { window.removeEventListener("mousemove", handleMouseMove); window.removeEventListener("mouseup", handleMouseUp); }
+    window.addEventListener("mousemove", handleMouseMove); window.addEventListener("mouseup", handleMouseUp);
   }
 
-  function handleTouchStart(e) {
-    if (e.touches.length !== 1) return;
-
-    e.stopPropagation();
-    onSelect();
-
-    const board = boardRef.current;
-    if (!board) return;
-
-    const touch = e.touches[0];
-    const boardRect = board.getBoundingClientRect();
-
-    touchStartRef.current = {
-      x: (touch.clientX - boardRect.left + board.scrollLeft) / zoom,
-      y: (touch.clientY - boardRect.top + board.scrollTop) / zoom,
-      pieceX: piece.x,
-      pieceY: piece.y,
-    };
-  }
-
-  function handleTouchMove(e) {
-    if (e.touches.length !== 1) return;
-
-    e.preventDefault();
-    e.stopPropagation();
-
-    const board = boardRef.current;
-    if (!board) return;
-
-    const touch = e.touches[0];
-    const boardRect = board.getBoundingClientRect();
-
-    const currentX = (touch.clientX - boardRect.left + board.scrollLeft) / zoom;
-    const currentY = (touch.clientY - boardRect.top + board.scrollTop) / zoom;
-
-    const dx = currentX - touchStartRef.current.x;
-    const dy = currentY - touchStartRef.current.y;
-
-    const rawX = touchStartRef.current.pieceX + dx;
-    const rawY = touchStartRef.current.pieceY + dy;
-
-    const snapped = applyMagneticSnap(rawX, rawY, piece, pieces);
-    updatePiece(piece.id, {
-      x: snapped.x,
-      y: snapped.y,
-    });
-  }
-
-  function handleDoubleClick(e) {
-    if (isSpacePressedRef.current) return;
-
-    e.preventDefault();
-    e.stopPropagation();
-    onSelect();
-
-    updatePiece(piece.id, {
-      rotation: (piece.rotation + 90) % 360,
-    });
-  }
-
-  function handleContextMenu(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    deletePiece(piece.id);
-  }
+  function handleDoubleClick(e) { if (isSpacePressedRef.current) return; e.preventDefault(); e.stopPropagation(); onSelect(); updatePiece(piece.id, { rotation: (piece.rotation + 90) % 360 }); }
+  function handleContextMenu(e) { e.preventDefault(); e.stopPropagation(); deletePiece(piece.id); }
 
   return (
-    <div
-      onMouseDown={handleMouseDown}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onDoubleClick={handleDoubleClick}
-      onContextMenu={handleContextMenu}
-      title="Duplo clique gira | Delete apaga | Botão direito apaga"
-      style={{
-        position: "absolute",
-        left: piece.x,
-        top: piece.y,
-        width,
-        height,
-        background: "#ffffff",
-        color: "#0f172a",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: isSpacePressedRef.current ? "grabbing" : "grab",
-        userSelect: "none",
-        border: selected ? "2px solid #3b82f6" : "1px solid #111827",
-        boxSizing: "border-box",
-        overflow: "hidden",
-        boxShadow: selected
-          ? "0 0 0 2px rgba(59,130,246,0.15)"
-          : "0 1px 2px rgba(0,0,0,0.08)",
-        zIndex: 20,
-        borderRadius: isMobile ? 2 : 0,
-        touchAction: "none",
-      }}
-    >
+    <div onMouseDown={handleMouseDown} onDoubleClick={handleDoubleClick} onContextMenu={handleContextMenu} style={{ position: "absolute", left: piece.x, top: piece.y, width, height, cursor: isSpacePressedRef.current ? "grabbing" : "grab", userSelect: "none", zIndex: 20 }}>
       {isCube ? (
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            background: "#ffffff",
-            border: "2px solid #111827",
-            boxSizing: "border-box",
-            position: "relative",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              top: 0,
-              height: "18%",
-              background: "#e5e7eb",
-              borderBottom: "2px solid #111827",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: "18%",
-              background: "#e5e7eb",
-              borderTop: "2px solid #111827",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: "14%",
-              background: "#d1d5db",
-              borderRight: "2px solid #111827",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              right: 0,
-              top: 0,
-              bottom: 0,
-              width: "14%",
-              background: "#d1d5db",
-              borderLeft: "2px solid #111827",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              left: "20%",
-              right: "20%",
-              top: "28%",
-              bottom: "28%",
-              background: "#ffffff",
-              border: "1px dashed rgba(17,24,39,0.35)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <span style={{ fontSize: 11, fontWeight: 700, color: "#111827" }}>
-              15
-            </span>
-          </div>
-          <div style={{ position: "absolute", width: 6, height: 6, borderRadius: "50%", background: "#111827", top: "6%", left: "30%" }} />
-          <div style={{ position: "absolute", width: 6, height: 6, borderRadius: "50%", background: "#111827", top: "6%", right: "30%" }} />
-          <div style={{ position: "absolute", width: 6, height: 6, borderRadius: "50%", background: "#111827", bottom: "6%", left: "30%" }} />
-          <div style={{ position: "absolute", width: 6, height: 6, borderRadius: "50%", background: "#111827", bottom: "6%", right: "30%" }} />
+        <div style={{ width: "100%", height: "100%", background: "#f8fafc", border: selected ? "3px solid #2563eb" : "2px solid #334155", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: selected ? "0 0 0 4px rgba(37,99,235,0.2)" : "0 2px 4px rgba(0,0,0,0.1)" }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#334155" }}>15</span>
         </div>
       ) : (
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            position: "relative",
-            background: "#ffffff",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              border: "1px solid #111827",
-              pointerEvents: "none",
-            }}
-          />
-
-          {isVertical ? (
-            <>
-              <div style={{ position: "absolute", left: "10%", top: 0, bottom: 0, width: 2, background: "#111827" }} />
-              <div style={{ position: "absolute", right: "10%", top: 0, bottom: 0, width: 2, background: "#111827" }} />
-              <div style={{ position: "absolute", left: "18%", top: "12%", width: "54%", height: 2, background: "#111827", transform: "rotate(35deg)", transformOrigin: "left center" }} />
-              <div style={{ position: "absolute", right: "18%", top: "28%", width: "54%", height: 2, background: "#111827", transform: "rotate(-35deg)", transformOrigin: "right center" }} />
-              <div style={{ position: "absolute", left: "18%", top: "50%", width: "54%", height: 2, background: "#111827", transform: "rotate(35deg)", transformOrigin: "left center" }} />
-              <div style={{ position: "absolute", right: "18%", top: "66%", width: "54%", height: 2, background: "#111827", transform: "rotate(-35deg)", transformOrigin: "right center" }} />
-              <div
-                style={{
-                  position: "absolute",
-                  left: "28%",
-                  right: "28%",
-                  top: "18%",
-                  bottom: "18%",
-                  background: "#ffffff",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <span
-                  style={{
-                    transform: "rotate(90deg)",
-                    whiteSpace: "nowrap",
-                    lineHeight: 1,
-                    fontSize: 16,
-                    fontWeight: 700,
-                    letterSpacing: 0.4,
-                    color: "#111827",
-                  }}
-                >
-                  {piece.type}
-                </span>
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ position: "absolute", top: "10%", left: 0, right: 0, height: 2, background: "#111827" }} />
-              <div style={{ position: "absolute", bottom: "10%", left: 0, right: 0, height: 2, background: "#111827" }} />
-              <div style={{ position: "absolute", left: "12%", top: "24%", width: "22%", height: 2, background: "#111827", transform: "rotate(18deg)", transformOrigin: "left center" }} />
-              <div style={{ position: "absolute", left: "30%", top: "62%", width: "22%", height: 2, background: "#111827", transform: "rotate(-18deg)", transformOrigin: "left center" }} />
-              <div style={{ position: "absolute", right: "30%", top: "24%", width: "22%", height: 2, background: "#111827", transform: "rotate(-18deg)", transformOrigin: "right center" }} />
-              <div style={{ position: "absolute", right: "12%", top: "62%", width: "22%", height: 2, background: "#111827", transform: "rotate(18deg)", transformOrigin: "right center" }} />
-              <div
-                style={{
-                  position: "absolute",
-                  left: "26%",
-                  right: "26%",
-                  top: "18%",
-                  bottom: "18%",
-                  background: "#ffffff",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <span
-                  style={{
-                    whiteSpace: "nowrap",
-                    lineHeight: 1,
-                    fontSize: 18,
-                    fontWeight: 700,
-                    letterSpacing: 0.4,
-                    color: "#111827",
-                  }}
-                >
-                  {piece.type}
-                </span>
-              </div>
-            </>
-          )}
+        <div style={{ width: "100%", height: "100%", background: "#ffffff", border: selected ? "3px solid #2563eb" : "1px solid #334155", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: selected ? "0 0 0 4px rgba(37,99,235,0.2)" : "0 2px 4px rgba(0,0,0,0.1)" }}>
+          <span style={{ whiteSpace: "nowrap", transform: isVertical ? "rotate(90deg)" : "none", fontSize: isVertical ? 12 : 14, fontWeight: 700, color: "#334155" }}>{piece.type}</span>
         </div>
       )}
     </div>
