@@ -7,10 +7,18 @@ const GRID = 5;
 const SCALE = 1.8;
 const THICKNESS = 15 * SCALE;
 const SNAP_DISTANCE = 18;
-const AVAILABLE_PIECES = [20, 25, 50, 70, 100, 120, 130, 150, 170, 200, 250, 270, 300];
+const AVAILABLE_PIECES = [20, 25, 50, 70, 100, 110, 120, 130, 140, 150, 170, 200, 250, 270, 300];
 const AUTOSAVE_KEY = "q15_builder_autosave_v1";
 
 const PREFERRED_PIECES = [300, 270, 250, 200, 170, 150];
+
+const ACCESSORY_TYPES = [
+  { key: "baseMenor", label: "Base menor" },
+  { key: "baseMaior", label: "Base maior" },
+  { key: "peFerro", label: "Pé de ferro" },
+];
+
+const EMPTY_ACCESSORY_COUNTS = { baseMenor: 0, baseMaior: 0, peFerro: 0 };
 
 function snapToGrid(value) { return Math.round(value / GRID) * GRID; }
 function rangesOverlap(aStart, aEnd, bStart, bEnd, tolerance = 20) { return aStart < bEnd + tolerance && aEnd > bStart - tolerance; }
@@ -51,8 +59,8 @@ function countPiecesForSelection(pieces, ids) {
   return counts;
 }
 
-function createProjectPayload({ id, name, pieces, zoom }) {
-  return { app: "q15-builder", version: 1, exportedAt: new Date().toISOString(), project: { id: id || Date.now().toString(), name: name || "Novo projeto", pieces, zoom, updatedAt: new Date().toISOString() } };
+function createProjectPayload({ id, name, pieces, zoom, accessoryCounts }) {
+  return { app: "q15-builder", version: 1, exportedAt: new Date().toISOString(), project: { id: id || Date.now().toString(), name: name || "Novo projeto", pieces, zoom, accessoryCounts, updatedAt: new Date().toISOString() } };
 }
 
 function readAutosave() { try { const raw = localStorage.getItem(AUTOSAVE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; } }
@@ -188,20 +196,18 @@ export default function App() {
   const [selectionRect, setSelectionRect] = useState(null);
   const [autoWidth, setAutoWidth] = useState("");
   const [autoHeight, setAutoHeight] = useState("");
+  
+  const [accessoryCounts, setAccessoryCounts] = useState(EMPTY_ACCESSORY_COUNTS);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Refs de Mouse Clássico
   const isSpacePressedRef = useRef(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, left: 0, top: 0 });
-
-  // Refs de Touch Screen Nativo (Pinça e Arraste)
   const isTouchPanningRef = useRef(false);
   const pinchStartDistRef = useRef(0);
   const pinchStartZoomRef = useRef(1);
 
-  // ============================================================================
-  // MOTOR DE HISTÓRICO (CTRL + Z)
-  // ============================================================================
+  // SISTEMA DE HISTÓRICO (CTRL + Z)
   const historyRef = useRef([]);
 
   const pushHistory = (currentPieces) => {
@@ -217,9 +223,7 @@ export default function App() {
     setSelectedBoxIds([]);
   };
 
-  // ============================================================================
   // FUNÇÕES DE COMANDO (DUPLICAR, GIRAR E APAGAR RÁPIDO)
-  // ============================================================================
   const duplicateSelected = () => {
     if (!selectedId) return;
     pushHistory(pieces);
@@ -259,12 +263,15 @@ export default function App() {
   useEffect(() => {
     const autosave = readAutosave();
     if (autosave?.project) {
-      setPieces(autosave.project.pieces || []); setZoom(autosave.project.zoom || 1);
-      setProjectName(autosave.project.name || "Novo projeto"); setCurrentProjectId(autosave.project.id || null);
+      setPieces(autosave.project.pieces || []); 
+      setZoom(autosave.project.zoom || 1);
+      setProjectName(autosave.project.name || "Novo projeto"); 
+      setCurrentProjectId(autosave.project.id || null);
+      setAccessoryCounts(autosave.project.accessoryCounts || { ...EMPTY_ACCESSORY_COUNTS, baseMenor: autosave.project.baseCount || 0 }); 
     }
   }, []);
 
-  const currentProject = useMemo(() => createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom }), [currentProjectId, projectName, pieces, zoom]);
+  const currentProject = useMemo(() => createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom, accessoryCounts }), [currentProjectId, projectName, pieces, zoom, accessoryCounts]);
   useEffect(() => { writeAutosave(currentProject); }, [currentProject]);
 
   const counts = useMemo(() => {
@@ -311,6 +318,7 @@ export default function App() {
     });
 
     setPieces((prev) => [...prev, ...createdPieces]); setSelectedId(null); setSelectedBoxIds(createdIds); setSelectionRect(null);
+    setIsMobileMenuOpen(false); 
   }
 
   function addPiece(type) { 
@@ -319,6 +327,7 @@ export default function App() {
     setPieces((prev) => [...prev, newPiece]); 
     setSelectedId(newPiece.id); 
     setSelectedBoxIds([]); 
+    setIsMobileMenuOpen(false); 
   }
   
   function updatePiece(id, newProps) { 
@@ -331,16 +340,24 @@ export default function App() {
     setSelectedId((prev) => (prev === id ? null : prev)); 
     setSelectedBoxIds((prev) => prev.filter((pieceId) => pieceId !== id)); 
   }
+
+  function updateAccessoryCount(key, delta) {
+    setAccessoryCounts((prev) => ({
+      ...prev,
+      [key]: Math.max(0, (prev[key] || 0) + delta),
+    }));
+  }
   
   function goToOrigin() { if (boardRef.current) boardRef.current.scrollTo({ left: 0, top: 0, behavior: "smooth" }); }
   
   function handleNewProject() { 
     pushHistory(pieces); 
-    const id = Date.now().toString(); setPieces([]); setZoom(1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName("Novo projeto"); setCurrentProjectId(id); writeAutosave(createProjectPayload({ id, name: "Novo projeto", pieces: [], zoom: 1 })); 
+    const id = Date.now().toString(); setPieces([]); setZoom(1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName("Novo projeto"); setCurrentProjectId(id); setAccessoryCounts(EMPTY_ACCESSORY_COUNTS);
+    writeAutosave(createProjectPayload({ id, name: "Novo projeto", pieces: [], zoom: 1, accessoryCounts: EMPTY_ACCESSORY_COUNTS })); 
   }
   
   function handleExportProject() {
-    const payload = createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom });
+    const payload = createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom, accessoryCounts });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a");
     const safeName = (projectName || "projeto-q15").trim().toLowerCase().replace(/[^a-z0-9-_]+/gi, "-");
     link.href = url; link.download = `${safeName}.q15.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
@@ -349,7 +366,21 @@ export default function App() {
   function handleImportClick() { fileInputRef.current?.click(); }
   function handleImportFile(event) {
     const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader();
-    reader.onload = () => { try { const parsed = JSON.parse(reader.result); const project = parsed?.project || parsed; if (!project || !Array.isArray(project.pieces)) return alert("Arquivo inválido."); pushHistory(pieces); setPieces(project.pieces || []); setZoom(project.zoom || 1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName(project.name || "Projeto importado"); setCurrentProjectId(project.id || Date.now().toString()); } catch { alert("Erro ao importar."); } finally { event.target.value = ""; } };
+    reader.onload = () => { 
+      try { 
+        const parsed = JSON.parse(reader.result); const project = parsed?.project || parsed; 
+        if (!project || !Array.isArray(project.pieces)) return alert("Arquivo inválido."); 
+        pushHistory(pieces); 
+        setPieces(project.pieces || []); 
+        setZoom(project.zoom || 1); 
+        setAccessoryCounts(project.accessoryCounts || { ...EMPTY_ACCESSORY_COUNTS, baseMenor: project.baseCount || 0 }); 
+        setSelectedId(null); 
+        setSelectedBoxIds([]); 
+        setSelectionRect(null); 
+        setProjectName(project.name || "Projeto importado"); 
+        setCurrentProjectId(project.id || Date.now().toString()); 
+      } catch { alert("Erro ao importar."); } finally { event.target.value = ""; } 
+    };
     reader.readAsText(file);
   }
 
@@ -388,18 +419,25 @@ export default function App() {
       return `<g><rect x="${x}" y="${y}" width="${size.width}" height="${size.height}" fill="#ffffff" stroke="#111827" stroke-width="1.6" /><text x="${x + size.width / 2}" y="${y + size.height / 2}" font-size="${fontSize}" font-weight="700" fill="#111827" text-anchor="middle" dominant-baseline="middle">${esc(piece.type)}</text></g>`;
     }).join("");
     const svgMarkup = `<svg viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block;background:#fff;">${svgElements}</svg>`;
-    const usedSummaryEntries = [...AVAILABLE_PIECES.filter((size) => (selectedBoxCounts[String(size)] || 0) > 0).map((size) => ({ label: `Peça ${size}`, value: selectedBoxCounts[String(size)] })), ...(selectedBoxCounts.cube > 0 ? [{ label: "Cubo", value: selectedBoxCounts.cube }] : []),];
+    
+    const usedSummaryEntries = [
+      ...AVAILABLE_PIECES.filter((size) => (selectedBoxCounts[String(size)] || 0) > 0).map(
+        (size) => ({ label: `Treliça ${size}cm`, value: selectedBoxCounts[String(size)] })
+      ),
+      ...(selectedBoxCounts.cube > 0 ? [{ label: "Cubo 15cm", value: selectedBoxCounts.cube }] : []), 
+      ...ACCESSORY_TYPES.filter((item) => (accessoryCounts[item.key] || 0) > 0).map((item) => ({ label: item.label, value: accessoryCounts[item.key] })),
+    ];
+
     const summaryRows = usedSummaryEntries.map((item) => `<div class="summary-item"><span>${item.label}</span><strong>${item.value}</strong></div>`).join("");
     const printWindow = window.open("", "_blank", "width=1300,height=900");
     if (!printWindow) return;
-    printWindow.document.write(`<html><head><title>Impressão do Box - Go Print</title><style>@page { size: A4 landscape; margin: 8mm; } * { box-sizing: border-box; } html, body { margin: 0; padding: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif; } .page { width: 100%; display: flex; flex-direction: column; gap: 10px; } .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; } .title { font-size: 20px; font-weight: 700; margin: 0; } .subtitle { margin-top: 3px; font-size: 11px; color: #475569; } .drawing-area { width: 100%; height: 130mm; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; } .drawing-frame { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; } .drawing-svg { width: 100%; height: 100%; } .summary-wrap { border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px; background: #fff; } .summary-title { font-size: 13px; font-weight: 700; margin: 0 0 8px 0; } .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 14px; } .summary-item { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 3px; font-size: 12px; } .summary-item strong { font-size: 12px; } @media print { .page { break-inside: avoid; } }</style></head><body><div class="page"><div class="header"><div><h1 class="title">${esc(projectName || "Projeto Q15")}</h1><div class="subtitle">Sistema de Box da Go Print - Desenho Técnico</div></div></div><div class="drawing-area"><div class="drawing-frame"><div class="drawing-svg">${svgMarkup}</div></div></div><div class="summary-wrap"><h2 class="summary-title">Resumo de peças do Box</h2><div class="summary-grid">${summaryRows || '<div class="summary-item"><span>Nenhuma peça</span><strong>0</strong></div>'}</div></div></div><script>window.onload = () => { setTimeout(() => window.print(), 250); };</script></body></html>`);
+    printWindow.document.write(`<html><head><title>Impressão do Box - Jotas-System Q15</title><style>@page { size: A4 landscape; margin: 8mm; } * { box-sizing: border-box; } html, body { margin: 0; padding: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif; } .page { width: 100%; display: flex; flex-direction: column; gap: 10px; } .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; } .title { font-size: 20px; font-weight: 700; margin: 0; } .subtitle { margin-top: 3px; font-size: 11px; color: #475569; } .drawing-area { width: 100%; height: 130mm; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; } .drawing-frame { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; } .drawing-svg { width: 100%; height: 100%; } .summary-wrap { border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px; background: #fff; } .summary-title { font-size: 13px; font-weight: 700; margin: 0 0 8px 0; } .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 14px; } .summary-item { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 3px; font-size: 12px; } .summary-item strong { font-size: 12px; } @media print { .page { break-inside: avoid; } }</style></head><body><div class="page"><div class="header"><div><h1 class="title">${esc(projectName || "Projeto Q15")}</h1><div class="subtitle">Sistema Q15 - Desenho Técnico</div></div></div><div class="drawing-area"><div class="drawing-frame"><div class="drawing-svg">${svgMarkup}</div></div></div><div class="summary-wrap"><h2 class="summary-title">Resumo de Materiais do Box</h2><div class="summary-grid">${summaryRows || '<div class="summary-item"><span>Nenhuma peça</span><strong>0</strong></div>'}</div></div></div><script>window.onload = () => { setTimeout(() => window.print(), 250); };</script></body></html>`);
     printWindow.document.close();
   }
 
-  // MOUSE: Arraste em grupo
   function startGroupMove(clientX, clientY) {
     const board = boardRef.current; if (!board || !selectedBoxIds.length) return;
-    pushHistory(pieces);
+    pushHistory(pieces); 
     const rect = board.getBoundingClientRect(); 
     const startX = (clientX - rect.left + board.scrollLeft) / zoom; 
     const startY = (clientY - rect.top + board.scrollTop) / zoom;
@@ -415,7 +453,6 @@ export default function App() {
     window.addEventListener("mousemove", handleMove); window.addEventListener("mouseup", handleUp);
   }
 
-  // TOUCH: Arraste em grupo no celular
   function startGroupTouchMove(touchEvent) {
     const board = boardRef.current; if (!board || !selectedBoxIds.length) return;
     pushHistory(pieces);
@@ -447,9 +484,7 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown); window.addEventListener("keyup", handleKeyUp); return () => { window.removeEventListener("keydown", handleKeyDown); window.removeEventListener("keyup", handleKeyUp); };
   }, [selectedId, pieces, selectedBoxIds]); 
 
-  // ============================================================================
-  // EVENTOS DO MOUSE (COMPUTADOR)
-  // ============================================================================
+  // Eventos de Mouse Clássicos
   useEffect(() => {
     const board = boardRef.current; if (!board) return;
     function handleWheel(e) {
@@ -466,7 +501,7 @@ export default function App() {
 
   function handleBoardMouseDown(e) {
     if (!boardRef.current) return; const board = boardRef.current;
-    if (e.target.closest('.context-menu')) return; // Protege o menu flutuante
+    if (e.target.closest('.context-menu')) return; 
 
     if (isSpacePressedRef.current) {
       e.preventDefault(); isPanningRef.current = true; panStartRef.current = { x: e.clientX, y: e.clientY, left: board.scrollLeft, top: board.scrollTop };
@@ -485,21 +520,17 @@ export default function App() {
     window.addEventListener("mousemove", handleMouseMove); window.addEventListener("mouseup", handleMouseUp);
   }
 
-  // ============================================================================
-  // EVENTOS TOUCH NATIVO (CELULAR E TABLET)
-  // ============================================================================
+  // Eventos de Touch Nativo (Pinça e Arraste)
   function handleBoardTouchStart(e) {
     if (!boardRef.current) return;
-    if (e.target.closest('.context-menu')) return; // Protege o menu flutuante no touch
+    if (e.target.closest('.context-menu')) return; 
     
     if (e.touches.length === 2) {
-      // Setup: PINÇA PARA ZOOM
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       pinchStartDistRef.current = Math.hypot(dx, dy);
       pinchStartZoomRef.current = zoom;
     } else if (e.touches.length === 1) {
-      // Setup: ARRASTAR A TELA COM 1 DEDO
       isTouchPanningRef.current = true;
       panStartRef.current = {
         x: e.touches[0].clientX,
@@ -507,7 +538,6 @@ export default function App() {
         left: boardRef.current.scrollLeft,
         top: boardRef.current.scrollTop
       };
-      // Limpa seleções se clicou no fundo
       setSelectedId(null);
       setSelectedBoxIds([]);
     }
@@ -517,16 +547,14 @@ export default function App() {
     if (!boardRef.current) return;
     
     if (e.touches.length === 2) {
-      // Executa: PINÇA PARA ZOOM
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
       const scale = dist / pinchStartDistRef.current;
       let newZoom = pinchStartZoomRef.current * scale;
-      newZoom = Math.min(2, Math.max(0.08, newZoom)); // Limita o zoom
+      newZoom = Math.min(2, Math.max(0.08, newZoom)); 
       setZoom(newZoom);
     } else if (e.touches.length === 1 && isTouchPanningRef.current) {
-      // Executa: ARRASTAR A TELA COM 1 DEDO
       const dx = e.touches[0].clientX - panStartRef.current.x;
       const dy = e.touches[0].clientY - panStartRef.current.y;
       boardRef.current.scrollLeft = panStartRef.current.left - dx;
@@ -538,107 +566,78 @@ export default function App() {
     isTouchPanningRef.current = false;
   }
 
-
-  // ============================================================================
-  // RENDERIZAÇÃO BLINDADA E RESPONSIVA
-  // ============================================================================
   return (
     <>
       <style>{`
         .q15-app-wrapper * { box-sizing: border-box; font-family: 'Inter', -apple-system, sans-serif; }
         .q15-app-wrapper { position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #f1f5f9; z-index: 9999; }
-        .q15-topbar { height: 60px; flex-shrink: 0; background: #0f172a; color: #ffffff; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; z-index: 10; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
-        .q15-main-body { display: flex; flex: 1; overflow: hidden; }
-        .q15-sidebar { width: 300px; flex-shrink: 0; background: #ffffff; border-right: 1px solid #e2e8f0; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; }
-        .q15-canvas-container { flex: 1; position: relative; background: #f8fafc; overflow: hidden; }
         
-        /* CSS VITAL PARA O MOBILE: Trava o zoom nativo do navegador para o nosso touch-action funcionar solto */
+        .q15-topbar { height: 60px; flex-shrink: 0; background: #0f172a; color: #ffffff; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; z-index: 2000; box-shadow: 0 1px 3px rgba(0,0,0,0.2); position: relative; }
+        .q15-main-body { display: flex; flex: 1; overflow: hidden; position: relative; }
+        
+        .q15-sidebar { width: 300px; flex-shrink: 0; background: #ffffff; border-right: 1px solid #e2e8f0; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; z-index: 1500; transition: transform 0.3s ease; }
+        
+        .q15-canvas-container { flex: 1; position: relative; background: #f8fafc; overflow: hidden; }
         .q15-canvas-scroller { width: 100%; height: 100%; overflow: auto; touch-action: none; }
         
         .q15-footer { height: 80px; flex-shrink: 0; background: #ffffff; border-top: 1px solid #e2e8f0; display: flex; align-items: center; padding: 0 24px; overflow-x: auto; box-shadow: 0 -1px 3px rgba(0,0,0,0.05); }
         .q15-input { padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; width: 100%; outline: none; font-size: 14px; color: #0f172a; background: #ffffff; }
-        .q15-btn { padding: 10px 14px; border-radius: 6px; border: 1px solid #cbd5e1; background: #ffffff; color: #1e293b; cursor: pointer; font-weight: 600; font-size: 13px; transition: background 0.2s; }
+        .q15-btn { padding: 10px 14px; border-radius: 6px; border: 1px solid #cbd5e1; background: #ffffff; color: #1e293b; cursor: pointer; font-weight: 600; font-size: 13px; transition: background 0.2s; white-space: nowrap; }
         .q15-btn:hover { background: #f1f5f9; }
         .q15-btn-primary { background: #2563eb; color: #ffffff; border: none; }
         .q15-btn-primary:hover { background: #1d4ed8; }
-        .q15-btn-print { background: #10b981; color: #ffffff; border: none; animation: pulse 2s infinite; }
-        .q15-btn-print:hover { background: #059669; animation: none; }
-        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); } 70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
         
-        /* Menu Flutuante Premium - Agora Otimizado para os dedos no Mobile */
-        .context-menu {
-          position: absolute;
-          background: #0f172a;
-          padding: 8px;
-          border-radius: 12px;
-          display: flex;
-          gap: 6px;
-          z-index: 100;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-          transform: translate(-50%, -110%);
-          border: 1px solid #334155;
-          align-items: center;
-        }
-        .context-btn {
-          background: #1e293b;
-          color: white;
-          border: 1px solid #334155;
-          border-radius: 8px;
-          padding: 8px 14px;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-        }
+        .context-menu { position: absolute; background: #0f172a; padding: 8px; border-radius: 12px; display: flex; gap: 6px; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.35); transform: translate(-50%, -110%); border: 1px solid #334155; align-items: center; }
+        .context-btn { background: #1e293b; color: white; border: 1px solid #334155; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
         .context-btn.danger { color: #f87171; }
         .context-btn:hover { background: #2563eb; border-color: #2563eb; color: white; }
         .context-btn.danger:hover { background: #dc2626; border-color: #dc2626; color: white; }
-        
-        .context-select {
-          background: #1e293b;
-          color: white;
-          border: 1px solid #334155;
-          border-radius: 8px;
-          padding: 8px 10px;
-          font-size: 12px;
-          font-weight: 600;
-          outline: none;
-          cursor: pointer;
-        }
+        .context-select { background: #1e293b; color: white; border: 1px solid #334155; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; }
 
-        /* Ajustes Responsivos para Celular */
+        .mobile-menu-btn { display: none; background: transparent; border: 1px solid rgba(255,255,255,0.3); color: white; border-radius: 6px; padding: 6px 12px; font-size: 18px; cursor: pointer; margin-right: 12px; }
+        .mobile-overlay { display: none; }
+
         @media (max-width: 768px) { 
-          .q15-main-body { flex-direction: column; } 
-          .q15-sidebar { width: 100%; max-height: 180px; border-right: none; border-bottom: 1px solid #e2e8f0; }
-          .q15-topbar { padding: 0 12px; overflow-x: auto; }
-          .q15-topbar input { width: 140px !important; }
+          .mobile-menu-btn { display: block; }
+          .q15-header-actions { overflow-x: auto; padding-bottom: 2px; }
+          .q15-sidebar { position: absolute; top: 0; left: 0; bottom: 0; height: 100%; transform: translateX(-100%); box-shadow: 2px 0 15px rgba(0,0,0,0.3); }
+          .q15-sidebar.mobile-open { transform: translateX(0); }
+          .mobile-overlay.mobile-open { display: block; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); z-index: 1400; }
         }
       `}</style>
 
-      <div className="q15-app-wrapper">
+      <div className="q15-app-wrapper" translate="no">
         
         {/* TOPO */}
         <header className="q15-topbar">
-          <div style={{ fontWeight: 800, fontSize: "16px", letterSpacing: "1px", minWidth: "max-content", marginRight: "12px" }}>Go Print</div>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <button className="mobile-menu-btn" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>☰</button>
+            <div style={{ fontWeight: 800, fontSize: "16px", letterSpacing: "1px", minWidth: "max-content", marginRight: "12px" }}>Sistema Q15</div>
+          </div>
+
+          <div className="q15-header-actions" style={{ display: "flex", gap: "8px", alignItems: "center", width: "100%" }}>
             
             {selectedBoxIds.length > 0 && (
-              <button className="q15-btn q15-btn-print" style={{ padding: "8px 12px" }} onClick={handlePrintSelectedBox}>
+              <button className="q15-btn q15-btn-print" style={{ padding: "8px 12px", background: "#10b981", color: "white", border: "none" }} onClick={handlePrintSelectedBox}>
                 🖨️ PDF
               </button>
             )}
 
-            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={undo} title="Atalho: Ctrl+Z">
-              ↩ Desfazer
+            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={undo}>
+              ↩ Voltar
             </button>
 
+            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={handleNewProject}>Novo</button>
+            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={handleImportClick}>Importar</button>
+            <input ref={fileInputRef} type="file" accept=".json,.q15.json" onChange={handleImportFile} style={{ display: "none" }} />
+            
             <input 
               value={projectName} 
               onChange={(e) => setProjectName(e.target.value)} 
-              style={{ padding: "8px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#ffffff", outline: "none", width: "160px" }} 
-              placeholder="Nome do projeto"
+              style={{ padding: "8px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#ffffff", outline: "none", minWidth: "120px", maxWidth: "160px" }} 
+              placeholder="Projeto"
             />
-            <button className="q15-btn" style={{ background: "transparent", color: "#ffffff", borderColor: "rgba(255,255,255,0.3)", padding: "8px 12px" }} onClick={handleNewProject}>Novo</button>
-            <input ref={fileInputRef} type="file" accept=".json,.q15.json" onChange={handleImportFile} style={{ display: "none" }} />
+            
             <button className="q15-btn q15-btn-primary" style={{ padding: "8px 16px" }} onClick={handleExportProject}>Salvar</button>
           </div>
         </header>
@@ -646,13 +645,15 @@ export default function App() {
         {/* ÁREA CENTRAL */}
         <div className="q15-main-body">
           
-          {/* BARRA LATERAL (Diminuída no mobile para sobrar tela) */}
-          <aside className="q15-sidebar">
+          <div className={`mobile-overlay ${isMobileMenuOpen ? 'mobile-open' : ''}`} onClick={() => setIsMobileMenuOpen(false)}></div>
+
+          {/* BARRA LATERAL */}
+          <aside className={`q15-sidebar ${isMobileMenuOpen ? 'mobile-open' : ''}`}>
             <div style={{ marginBottom: "20px" }}>
-              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>Gerar Box Auto</div>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>GERADOR DE BOX AUTOMÁTICO</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
-                <input value={autoWidth} onChange={(e) => setAutoWidth(e.target.value)} className="q15-input" placeholder="Larg (cm)" />
-                <input value={autoHeight} onChange={(e) => setAutoHeight(e.target.value)} className="q15-input" placeholder="Alt (cm)" />
+                <input value={autoWidth} onChange={(e) => setAutoWidth(e.target.value)} className="q15-input" placeholder="Largura (cm)" />
+                <input value={autoHeight} onChange={(e) => setAutoHeight(e.target.value)} className="q15-input" placeholder="Altura (cm)" />
               </div>
               <button className="q15-btn q15-btn-primary" style={{ width: "100%" }} onClick={handleGenerateAutomaticBox}>+ Gerar Box</button>
             </div>
@@ -661,27 +662,43 @@ export default function App() {
               <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>Peças Avulsas</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <button className="q15-btn" style={{ borderColor: "#2563eb", color: "#2563eb", fontWeight: 700, display: "flex", justifyContent: "space-between" }} onClick={() => addPiece("cube")}>
-                  <span>Cubo de Canto (15cm)</span><span>+</span>
+                  <span>Cubo de Canto (15)</span><span>+</span>
                 </button>
                 {AVAILABLE_PIECES.map((size) => (
                   <button key={size} className="q15-btn" style={{ display: "flex", justifyContent: "space-between" }} onClick={() => addPiece(String(size))}>
-                    <span>Treliça Q15 - {size} cm</span><span style={{ color: "#94a3b8" }}>+</span>
+                    <span>Treliça Q15 - {size}</span><span style={{ color: "#94a3b8" }}>+</span>
                   </button>
                 ))}
               </div>
             </div>
+
+            {/* MÓDULO DE ACESSÓRIOS */}
+            <div style={{ marginTop: "24px" }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>Acessórios Extras</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {ACCESSORY_TYPES.map((item) => (
+                  <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "6px" }}>
+                    <span style={{ fontSize: "13px", fontWeight: 600, color: "#1e293b" }}>{item.label}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <button className="q15-btn" style={{ padding: "4px 8px" }} onClick={() => updateAccessoryCount(item.key, -1)}>-</button>
+                      <span style={{ fontWeight: 700, fontSize: "14px", width: "16px", textAlign: "center", color: "#0f172a" }}>{accessoryCounts[item.key] || 0}</span>
+                      <button className="q15-btn" style={{ padding: "4px 8px" }} onClick={() => updateAccessoryCount(item.key, 1)}>+</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
           </aside>
 
           {/* ÁREA DE DESENHO */}
           <main className="q15-canvas-container">
-            {/* Controles Flutuantes de Zoom (Mais fáceis para tocar) */}
             <div style={{ position: "absolute", right: "16px", top: "16px", zIndex: 20, display: "flex", flexDirection: "column", gap: "8px" }}>
               <button className="q15-btn" style={{ padding: "8px", width: "42px", height: "42px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.15)", borderRadius: "50%", fontSize: "18px" }} onClick={() => setZoom((z) => Math.min(z + 0.1, 2))}>+</button>
               <button className="q15-btn" style={{ padding: "8px", width: "42px", height: "42px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.15)", borderRadius: "50%", fontSize: "18px" }} onClick={() => setZoom((z) => Math.max(z - 0.1, 0.08))}>-</button>
               <button className="q15-btn" style={{ padding: "8px", width: "42px", height: "42px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.15)", borderRadius: "50%", fontSize: "12px" }} onClick={goToOrigin}>Início</button>
             </div>
 
-            {/* O SCROLL COM A EVENTOS TOUCH NATIVOS APLICADOS */}
             <div className="q15-canvas-scroller" ref={boardRef} 
                  onMouseDown={handleBoardMouseDown} 
                  onTouchStart={handleBoardTouchStart}
@@ -699,7 +716,6 @@ export default function App() {
                   {selectionRect && (() => { const rect = normalizeRect(selectionRect); return <div style={{ position: "absolute", left: rect.left, top: rect.top, width: rect.width, height: rect.height, border: "2px dashed #2563eb", background: "rgba(37,99,235,0.08)", pointerEvents: "none", zIndex: 10 }} />; })()}
                   {selectedBoxBounds && <div style={{ position: "absolute", left: selectedBoxBounds.left - 8, top: selectedBoxBounds.top - 8, width: selectedBoxBounds.right - selectedBoxBounds.left + 16, height: selectedBoxBounds.bottom - selectedBoxBounds.top + 16, border: "2px solid #2563eb", background: "rgba(37,99,235,0.03)", pointerEvents: "none", zIndex: 9 }} />}
                   
-                  {/* RENDERIZAÇÃO DAS PEÇAS COM EVENTOS TOUCH */}
                   {pieces.map((piece) => (
                     <Piece 
                       key={piece.id} 
@@ -719,7 +735,6 @@ export default function App() {
                     />
                   ))}
 
-                  {/* MENU FLUTUANTE DE CONTEXTO OTIMIZADO PARA MOBILE E DESKTOP */}
                   {selectedId && (() => {
                     const selPiece = pieces.find(p => p.id === selectedId);
                     if (!selPiece) return null;
@@ -746,13 +761,12 @@ export default function App() {
           </main>
         </div>
 
-        {/* RODAPÉ: LISTA DE MATERIAIS */}
         <footer className="q15-footer">
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#475569", marginRight: "24px", letterSpacing: "0.5px" }}>MATERIAIS</div>
           
           <div style={{ display: "flex", gap: "8px" }}>
             <div style={{ border: "1px solid #e2e8f0", padding: "6px 12px", borderRadius: "6px", background: "#f8fafc", display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "11px", color: "#64748b" }}>Cubo 15cm</span>
+              <span style={{ fontSize: "11px", color: "#64748b" }}>Cubo 15</span>
               <span style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{counts.cube || 0}</span>
             </div>
 
@@ -760,6 +774,13 @@ export default function App() {
               <div key={size} style={{ border: "1px solid #e2e8f0", padding: "6px 12px", borderRadius: "6px", background: "#f8fafc", display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "11px", color: "#64748b" }}>Q15 {size}cm</span>
                 <span style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{counts[String(size)]}</span>
+              </div>
+            ))}
+
+            {ACCESSORY_TYPES.filter((item) => (accessoryCounts[item.key] || 0) > 0).map((item) => (
+              <div key={item.key} style={{ border: "1px solid #e2e8f0", padding: "6px 12px", borderRadius: "6px", background: "#f1f5f9", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#475569", fontWeight: 600 }}>{item.label}</span>
+                <span style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{accessoryCounts[item.key]}</span>
               </div>
             ))}
           </div>
@@ -770,16 +791,12 @@ export default function App() {
   );
 }
 
-// ============================================================================
-// COMPONENTE PEÇA 2D (AGORA COM CONTROLES NATIVOS DE TOUCH SCREEN)
-// ============================================================================
 function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, onSelect, zoom, isSpacePressedRef, selectedBoxIds, startGroupMove, startGroupTouchMove, pushHistory }) {
   const offsetRef = useRef({ x: 0, y: 0 });
   const { width, height } = getPieceSize(piece.type, piece.rotation);
   const isCube = piece.type === "cube";
   const isVertical = piece.rotation === 90 || piece.rotation === 270;
 
-  // Evento Nativo Desktop (Mouse)
   function handleMouseDown(e) {
     if (isSpacePressedRef.current) return; e.preventDefault(); e.stopPropagation(); onSelect();
     pushHistory(pieces);
@@ -793,10 +810,9 @@ function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, on
     window.addEventListener("mousemove", handleMouseMove); window.addEventListener("mouseup", handleMouseUp);
   }
 
-  // Evento Nativo Mobile (Touch)
   function handleTouchStart(e) {
-    if (e.touches.length > 1) return; // Ignora se estiver fazendo pinça para zoom
-    e.stopPropagation(); // Bloqueia o scroll do fundo da tela
+    if (e.touches.length > 1) return; 
+    e.stopPropagation(); 
     onSelect();
     pushHistory(pieces);
 
@@ -817,7 +833,6 @@ function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, on
     window.addEventListener("touchmove", handleTouchMove, { passive: false }); window.addEventListener("touchend", handleTouchEnd);
   }
 
-  // Double click clássico e Botão direito retidos para desktop
   function handleDoubleClick(e) { if (isSpacePressedRef.current) return; e.preventDefault(); e.stopPropagation(); onSelect(); pushHistory(pieces); updatePiece(piece.id, { rotation: (piece.rotation + 90) % 360 }); }
   function handleContextMenu(e) { e.preventDefault(); e.stopPropagation(); pushHistory(pieces); deletePiece(piece.id); }
 
@@ -827,7 +842,7 @@ function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, on
       onTouchStart={handleTouchStart}
       onDoubleClick={handleDoubleClick} 
       onContextMenu={handleContextMenu} 
-      style={{ position: "absolute", left: piece.x, top: piece.y, width, height, cursor: isSpacePressedRef.current ? "grabbing" : "grab", userSelect: "none", zIndex: 20, touchAction: "none" /* TRAVA VITAL PRO MOBILE FUNCIONAR */ }}
+      style={{ position: "absolute", left: piece.x, top: piece.y, width, height, cursor: isSpacePressedRef.current ? "grabbing" : "grab", userSelect: "none", zIndex: 20, touchAction: "none" }}
     >
       {isCube ? (
         <div style={{ width: "100%", height: "100%", background: "#f8fafc", border: selected ? "3px solid #2563eb" : "2px solid #334155", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: selected ? "0 0 0 4px rgba(37,99,235,0.2)" : "0 2px 4px rgba(0,0,0,0.1)" }}>
