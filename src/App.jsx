@@ -20,13 +20,43 @@ const ACCESSORY_TYPES = [
 
 const EMPTY_ACCESSORY_COUNTS = { baseMenor: 0, baseMaior: 0, peFerro: 0 };
 
+const STAGE_MODULE_TYPES = [
+  { key: "stage_200x100", label: "Praticável 2,00 x 1,00m", widthCm: 200, depthCm: 100 },
+  { key: "stage_100x100", label: "Praticável 1,00 x 1,00m", widthCm: 100, depthCm: 100 },
+  { key: "stage_200x50", label: "Praticável 2,00 x 0,50m", widthCm: 200, depthCm: 50 },
+  { key: "stage_100x50", label: "Praticável 1,00 x 0,50m", widthCm: 100, depthCm: 50 },
+];
+
+const STAGE_FOOT_HEIGHTS = [20, 40, 60, 80, 100];
+
 function snapToGrid(value) { return Math.round(value / GRID) * GRID; }
 function rangesOverlap(aStart, aEnd, bStart, bEnd, tolerance = 20) { return aStart < bEnd + tolerance && aEnd > bStart - tolerance; }
+function getStageModule(type) { return STAGE_MODULE_TYPES.find((item) => item.key === type) || null; }
+function isStageModule(type) { return Boolean(getStageModule(type)); }
+function getPieceStageHeight(piece, fallback = 40) {
+  const value = Number(piece?.stageHeight);
+  return STAGE_FOOT_HEIGHTS.includes(value) ? value : fallback;
+}
+function getStageFeetSummary(piecesList, ids = null) {
+  return piecesList.reduce((acc, piece) => {
+    if (ids && !ids.includes(piece.id)) return acc;
+    if (!isStageModule(piece.type)) return acc;
+    const height = getPieceStageHeight(piece);
+    acc[height] = (acc[height] || 0) + 4;
+    return acc;
+  }, {});
+}
 
 function getPieceSize(type, rotation) {
   if (type === "cube") return { width: 15 * SCALE, height: 15 * SCALE };
-  const length = Number(type) * SCALE;
+  const stageModule = getStageModule(type);
   const isVertical = rotation === 90 || rotation === 270;
+  if (stageModule) {
+    const width = stageModule.widthCm * SCALE;
+    const height = stageModule.depthCm * SCALE;
+    return isVertical ? { width: height, height: width } : { width, height };
+  }
+  const length = Number(type) * SCALE;
   return isVertical ? { width: THICKNESS, height: length } : { width: length, height: THICKNESS };
 }
 
@@ -59,8 +89,22 @@ function countPiecesForSelection(pieces, ids) {
   return counts;
 }
 
-function createProjectPayload({ id, name, pieces, zoom, accessoryCounts }) {
-  return { app: "q15-builder", version: 1, exportedAt: new Date().toISOString(), project: { id: id || Date.now().toString(), name: name || "Novo projeto", pieces, zoom, accessoryCounts, updatedAt: new Date().toISOString() } };
+function createProjectPayload({ id, name, pieces, zoom, accessoryCounts, stageHeight, carpetColor }) {
+  return {
+    app: "q15-builder",
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    project: {
+      id: id || Date.now().toString(),
+      name: name || "Novo projeto",
+      pieces,
+      zoom,
+      accessoryCounts,
+      stageHeight,
+      carpetColor,
+      updatedAt: new Date().toISOString()
+    }
+  };
 }
 
 function readAutosave() { try { const raw = localStorage.getItem(AUTOSAVE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; } }
@@ -196,6 +240,10 @@ export default function App() {
   const [selectionRect, setSelectionRect] = useState(null);
   const [autoWidth, setAutoWidth] = useState("");
   const [autoHeight, setAutoHeight] = useState("");
+  const [stageWidth, setStageWidth] = useState("");
+  const [stageDepth, setStageDepth] = useState("");
+  const [stageHeight, setStageHeight] = useState(40);
+  const [carpetColor, setCarpetColor] = useState("");
   
   const [accessoryCounts, setAccessoryCounts] = useState(EMPTY_ACCESSORY_COUNTS);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -243,7 +291,20 @@ export default function App() {
   const changeSelectedSize = (newType) => {
     if (!selectedId) return;
     pushHistory(pieces);
-    updatePiece(selectedId, { type: newType });
+    updatePiece(selectedId, {
+      type: newType,
+      stageHeight: isStageModule(newType) ? stageHeight : undefined,
+    });
+  };
+
+  const changeSelectedStageHeight = (newHeight) => {
+    if (!selectedId) return;
+    const selectedPiece = pieces.find((p) => p.id === selectedId);
+    if (!selectedPiece || !isStageModule(selectedPiece.type)) return;
+    const numericHeight = Number(newHeight);
+    if (!STAGE_FOOT_HEIGHTS.includes(numericHeight)) return;
+    pushHistory(pieces);
+    updatePiece(selectedId, { stageHeight: numericHeight });
   };
 
   const rotateSelected = () => {
@@ -268,10 +329,12 @@ export default function App() {
       setProjectName(autosave.project.name || "Novo projeto"); 
       setCurrentProjectId(autosave.project.id || null);
       setAccessoryCounts(autosave.project.accessoryCounts || { ...EMPTY_ACCESSORY_COUNTS, baseMenor: autosave.project.baseCount || 0 }); 
+      setStageHeight(autosave.project.stageHeight || 40);
+      setCarpetColor(autosave.project.carpetColor || ""); 
     }
   }, []);
 
-  const currentProject = useMemo(() => createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom, accessoryCounts }), [currentProjectId, projectName, pieces, zoom, accessoryCounts]);
+  const currentProject = useMemo(() => createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom, accessoryCounts, stageHeight, carpetColor }), [currentProjectId, projectName, pieces, zoom, accessoryCounts, stageHeight, carpetColor]);
   useEffect(() => { writeAutosave(currentProject); }, [currentProject]);
 
   const counts = useMemo(() => {
@@ -280,6 +343,9 @@ export default function App() {
 
   const selectedBoxBounds = useMemo(() => getSelectionBounds(pieces, selectedBoxIds), [pieces, selectedBoxIds]);
   const selectedBoxCounts = useMemo(() => countPiecesForSelection(pieces, selectedBoxIds), [pieces, selectedBoxIds]);
+  const stageFeetSummary = useMemo(() => getStageFeetSummary(pieces), [pieces]);
+  const stageFeetCount = useMemo(() => Object.values(stageFeetSummary).reduce((sum, value) => sum + value, 0), [stageFeetSummary]);
+  const selectedStageFeetSummary = useMemo(() => getStageFeetSummary(pieces, selectedBoxIds), [pieces, selectedBoxIds]);
 
   function handleGenerateAutomaticBox() {
     const widthCm = normalizeMeasure(autoWidth); const heightCm = normalizeMeasure(autoHeight);
@@ -321,9 +387,55 @@ export default function App() {
     setIsMobileMenuOpen(false); 
   }
 
+  function handleGenerateAutomaticStage() {
+    const widthCm = normalizeMeasure(stageWidth);
+    const depthCm = normalizeMeasure(stageDepth);
+    if (!widthCm || !depthCm) return alert("Preencha largura e profundidade válidas em cm.");
+    if (widthCm < 50 || depthCm < 50) return alert("A medida mínima do palco deve ser 50 cm.");
+
+    pushHistory(pieces);
+
+    const origin = getNextAutoOrigin(pieces);
+    const createdPieces = [];
+    const createdIds = [];
+    const makeStage = (type, x, y) => {
+      const newPiece = { id: Date.now() + Math.random() + createdPieces.length, type, x: snapToGrid(x), y: snapToGrid(y), rotation: 0, stageHeight };
+      createdPieces.push(newPiece);
+      createdIds.push(newPiece.id);
+    };
+
+    let remainingDepth = depthCm;
+    let rowY = origin.y;
+    while (remainingDepth > 0) {
+      const rowDepth = remainingDepth >= 100 ? 100 : 50;
+      let remainingWidth = widthCm;
+      let colX = origin.x;
+      while (remainingWidth > 0) {
+        let moduleType = "stage_200x100";
+        if (remainingWidth >= 200 && rowDepth === 100) moduleType = "stage_200x100";
+        else if (remainingWidth >= 200 && rowDepth === 50) moduleType = "stage_200x50";
+        else if (rowDepth === 100) moduleType = "stage_100x100";
+        else moduleType = "stage_100x50";
+
+        const module = getStageModule(moduleType);
+        makeStage(moduleType, colX, rowY);
+        colX += module.widthCm * SCALE;
+        remainingWidth -= module.widthCm;
+      }
+      rowY += rowDepth * SCALE;
+      remainingDepth -= rowDepth;
+    }
+
+    setPieces((prev) => [...prev, ...createdPieces]);
+    setSelectedId(null);
+    setSelectedBoxIds(createdIds);
+    setSelectionRect(null);
+    setIsMobileMenuOpen(false);
+  }
+
   function addPiece(type) { 
     pushHistory(pieces); 
-    const newPiece = { id: Date.now() + Math.random(), type, x: 160, y: 160, rotation: 0 }; 
+    const newPiece = { id: Date.now() + Math.random(), type, x: 160, y: 160, rotation: 0, stageHeight: isStageModule(type) ? stageHeight : undefined }; 
     setPieces((prev) => [...prev, newPiece]); 
     setSelectedId(newPiece.id); 
     setSelectedBoxIds([]); 
@@ -352,12 +464,12 @@ export default function App() {
   
   function handleNewProject() { 
     pushHistory(pieces); 
-    const id = Date.now().toString(); setPieces([]); setZoom(1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName("Novo projeto"); setCurrentProjectId(id); setAccessoryCounts(EMPTY_ACCESSORY_COUNTS);
-    writeAutosave(createProjectPayload({ id, name: "Novo projeto", pieces: [], zoom: 1, accessoryCounts: EMPTY_ACCESSORY_COUNTS })); 
+    const id = Date.now().toString(); setPieces([]); setZoom(1); setSelectedId(null); setSelectedBoxIds([]); setSelectionRect(null); setProjectName("Novo projeto"); setCurrentProjectId(id); setAccessoryCounts(EMPTY_ACCESSORY_COUNTS); setStageHeight(40); setCarpetColor("");
+    writeAutosave(createProjectPayload({ id, name: "Novo projeto", pieces: [], zoom: 1, accessoryCounts: EMPTY_ACCESSORY_COUNTS, stageHeight: 40, carpetColor: "" })); 
   }
   
   function handleExportProject() {
-    const payload = createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom, accessoryCounts });
+    const payload = createProjectPayload({ id: currentProjectId, name: projectName, pieces, zoom, accessoryCounts, stageHeight, carpetColor });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a");
     const safeName = (projectName || "projeto-q15").trim().toLowerCase().replace(/[^a-z0-9-_]+/gi, "-");
     link.href = url; link.download = `${safeName}.q15.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
@@ -374,6 +486,8 @@ export default function App() {
         setPieces(project.pieces || []); 
         setZoom(project.zoom || 1); 
         setAccessoryCounts(project.accessoryCounts || { ...EMPTY_ACCESSORY_COUNTS, baseMenor: project.baseCount || 0 }); 
+        setStageHeight(project.stageHeight || 40);
+        setCarpetColor(project.carpetColor || ""); 
         setSelectedId(null); 
         setSelectedBoxIds([]); 
         setSelectionRect(null); 
@@ -407,7 +521,12 @@ export default function App() {
       const x = piece.x - bounds.left + drawingPadding;
       const y = piece.y - bounds.top + drawingPadding;
       const isCube = piece.type === "cube";
+      const stageModule = getStageModule(piece.type);
       const isVertical = piece.rotation === 90 || piece.rotation === 270;
+      if (stageModule) {
+        const fontSize = Math.max(13, Math.min(24, 16 * fontCompensation));
+        return `<g><rect x="${x}" y="${y}" width="${size.width}" height="${size.height}" rx="8" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2" /><line x1="${x}" y1="${y}" x2="${x + size.width}" y2="${y + size.height}" stroke="#93c5fd" stroke-width="1"/><line x1="${x + size.width}" y1="${y}" x2="${x}" y2="${y + size.height}" stroke="#93c5fd" stroke-width="1"/><text x="${x + size.width / 2}" y="${y + size.height / 2}" font-size="${fontSize}" font-weight="700" fill="#1e3a8a" text-anchor="middle" dominant-baseline="middle">${esc(stageModule.widthCm / 100)}x${esc(stageModule.depthCm / 100)}</text><text x="${x + size.width / 2}" y="${y + size.height / 2 + fontSize + 5}" font-size="${Math.max(10, fontSize - 4)}" font-weight="600" fill="#1e40af" text-anchor="middle" dominant-baseline="middle">pé ${esc(getPieceStageHeight(piece))}cm</text></g>`;
+      }
       if (isCube) {
         const cubeFont = Math.max(12, Math.min(26, 12 * fontCompensation));
         return `<g><rect x="${x}" y="${y}" width="${size.width}" height="${size.height}" fill="#ffffff" stroke="#111827" stroke-width="2" /><text x="${x + size.width / 2}" y="${y + size.height / 2}" font-size="${cubeFont}" font-weight="700" fill="#111827" text-anchor="middle" dominant-baseline="middle">15</text></g>`;
@@ -424,14 +543,20 @@ export default function App() {
       ...AVAILABLE_PIECES.filter((size) => (selectedBoxCounts[String(size)] || 0) > 0).map(
         (size) => ({ label: `Treliça ${size}cm`, value: selectedBoxCounts[String(size)] })
       ),
-      ...(selectedBoxCounts.cube > 0 ? [{ label: "Cubo 15cm", value: selectedBoxCounts.cube }] : []), 
+      ...(selectedBoxCounts.cube > 0 ? [{ label: "Cubo 15cm", value: selectedBoxCounts.cube }] : []),
+      ...STAGE_MODULE_TYPES.filter((item) => (selectedBoxCounts[item.key] || 0) > 0).map((item) => ({ label: item.label, value: selectedBoxCounts[item.key] })),
+      ...Object.entries(selectedStageFeetSummary).sort(([a], [b]) => Number(a) - Number(b)).map(([height, value]) => ({ label: `Pés de praticável ${height}cm`, value })),
       ...ACCESSORY_TYPES.filter((item) => (accessoryCounts[item.key] || 0) > 0).map((item) => ({ label: item.label, value: accessoryCounts[item.key] })),
     ];
 
+    const hasSelectedStageModules = selectedPieces.some((piece) => isStageModule(piece.type));
+    const carpetInfo = hasSelectedStageModules && carpetColor.trim()
+      ? `<div class="info-box"><span>Cor do carpete</span><strong>${esc(carpetColor.trim())}</strong></div>`
+      : "";
     const summaryRows = usedSummaryEntries.map((item) => `<div class="summary-item"><span>${item.label}</span><strong>${item.value}</strong></div>`).join("");
     const printWindow = window.open("", "_blank", "width=1300,height=900");
     if (!printWindow) return;
-    printWindow.document.write(`<html><head><title>Impressão do Box - Jotas-System Q15</title><style>@page { size: A4 landscape; margin: 8mm; } * { box-sizing: border-box; } html, body { margin: 0; padding: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif; } .page { width: 100%; display: flex; flex-direction: column; gap: 10px; } .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; } .title { font-size: 20px; font-weight: 700; margin: 0; } .subtitle { margin-top: 3px; font-size: 11px; color: #475569; } .drawing-area { width: 100%; height: 130mm; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; } .drawing-frame { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; } .drawing-svg { width: 100%; height: 100%; } .summary-wrap { border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px; background: #fff; } .summary-title { font-size: 13px; font-weight: 700; margin: 0 0 8px 0; } .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 14px; } .summary-item { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 3px; font-size: 12px; } .summary-item strong { font-size: 12px; } @media print { .page { break-inside: avoid; } }</style></head><body><div class="page"><div class="header"><div><h1 class="title">${esc(projectName || "Projeto Q15")}</h1><div class="subtitle">Sistema Q15 - Desenho Técnico</div></div></div><div class="drawing-area"><div class="drawing-frame"><div class="drawing-svg">${svgMarkup}</div></div></div><div class="summary-wrap"><h2 class="summary-title">Resumo de Materiais do Box</h2><div class="summary-grid">${summaryRows || '<div class="summary-item"><span>Nenhuma peça</span><strong>0</strong></div>'}</div></div></div><script>window.onload = () => { setTimeout(() => window.print(), 250); };</script></body></html>`);
+    printWindow.document.write(`<html><head><title>Impressão do Box - Jotas-System Q15</title><style>@page { size: A4 landscape; margin: 8mm; } * { box-sizing: border-box; } html, body { margin: 0; padding: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif; } .page { width: 100%; display: flex; flex-direction: column; gap: 10px; } .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; } .title { font-size: 20px; font-weight: 700; margin: 0; } .subtitle { margin-top: 3px; font-size: 11px; color: #475569; } .drawing-area { width: 100%; height: 130mm; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; } .drawing-frame { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; } .drawing-svg { width: 100%; height: 100%; } .info-box { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 10px; padding: 8px 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 16px; } .info-box span { color: #1e40af; font-weight: 700; } .info-box strong { color: #1e3a8a; font-size: 14px; } .summary-wrap { border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px; background: #fff; } .summary-title { font-size: 13px; font-weight: 700; margin: 0 0 8px 0; } .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 14px; } .summary-item { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 3px; font-size: 12px; } .summary-item strong { font-size: 12px; } @media print { .page { break-inside: avoid; } }</style></head><body><div class="page"><div class="header"><div><h1 class="title">${esc(projectName || "Projeto Q15")}</h1><div class="subtitle">Sistema Q15 - Desenho Técnico</div></div></div><div class="drawing-area"><div class="drawing-frame"><div class="drawing-svg">${svgMarkup}</div></div></div>${carpetInfo}<div class="summary-wrap"><h2 class="summary-title">Resumo de Materiais</h2><div class="summary-grid">${summaryRows || '<div class="summary-item"><span>Nenhuma peça</span><strong>0</strong></div>'}</div></div></div><script>window.onload = () => { setTimeout(() => window.print(), 250); };</script></body></html>`);
     printWindow.document.close();
   }
 
@@ -658,6 +783,25 @@ export default function App() {
               <button className="q15-btn q15-btn-primary" style={{ width: "100%" }} onClick={handleGenerateAutomaticBox}>+ Gerar Box</button>
             </div>
 
+            <div style={{ marginBottom: "20px", paddingTop: "16px", borderTop: "1px solid #e2e8f0" }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>GERADOR DE PALCO / PRATICÁVEL</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+                <input value={stageWidth} onChange={(e) => setStageWidth(e.target.value)} className="q15-input" placeholder="Largura (cm)" />
+                <input value={stageDepth} onChange={(e) => setStageDepth(e.target.value)} className="q15-input" placeholder="Profund. (cm)" />
+              </div>
+              <select value={stageHeight} onChange={(e) => setStageHeight(Number(e.target.value))} className="q15-input" style={{ marginBottom: "8px" }}>
+                {STAGE_FOOT_HEIGHTS.map((height) => <option key={height} value={height}>Pé do palco: {height}cm</option>)}
+              </select>
+              <input
+                value={carpetColor}
+                onChange={(e) => setCarpetColor(e.target.value)}
+                className="q15-input"
+                placeholder="Cor do carpete. Ex: Grafite, Preto, Azul"
+                style={{ marginBottom: "8px" }}
+              />
+              <button className="q15-btn" style={{ width: "100%", background: "#1d4ed8", color: "#ffffff", border: "none" }} onClick={handleGenerateAutomaticStage}>+ Gerar Palco</button>
+            </div>
+
             <div>
               <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>Peças Avulsas</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -667,6 +811,17 @@ export default function App() {
                 {AVAILABLE_PIECES.map((size) => (
                   <button key={size} className="q15-btn" style={{ display: "flex", justifyContent: "space-between" }} onClick={() => addPiece(String(size))}>
                     <span>Treliça Q15 - {size}</span><span style={{ color: "#94a3b8" }}>+</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginTop: "24px" }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", letterSpacing: "0.5px", marginBottom: "8px", textTransform: "uppercase" }}>Praticáveis Avulsos</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {STAGE_MODULE_TYPES.map((item) => (
+                  <button key={item.key} className="q15-btn" style={{ borderColor: "#1d4ed8", color: "#1d4ed8", display: "flex", justifyContent: "space-between" }} onClick={() => addPiece(item.key)}>
+                    <span>{item.label}</span><span>+</span>
                   </button>
                 ))}
               </div>
@@ -749,7 +904,22 @@ export default function App() {
                           {AVAILABLE_PIECES.map(size => (
                             <option key={size} value={String(size)}>Tr. {size}</option>
                           ))}
+                          {STAGE_MODULE_TYPES.map(item => (
+                            <option key={item.key} value={item.key}>{item.label}</option>
+                          ))}
                         </select>
+                        {isStageModule(selPiece.type) && (
+                          <select
+                            className="context-select"
+                            value={getPieceStageHeight(selPiece)}
+                            onChange={(e) => changeSelectedStageHeight(e.target.value)}
+                            title="Altura do pé do praticável"
+                          >
+                            {STAGE_FOOT_HEIGHTS.map((height) => (
+                              <option key={height} value={height}>Pé {height}cm</option>
+                            ))}
+                          </select>
+                        )}
                         <button className="context-btn danger" onClick={removeSelected}>Excluir</button>
                       </div>
                     );
@@ -777,6 +947,27 @@ export default function App() {
               </div>
             ))}
 
+            {STAGE_MODULE_TYPES.filter((item) => counts[item.key] > 0).map((item) => (
+              <div key={item.key} style={{ border: "1px solid #bfdbfe", padding: "6px 12px", borderRadius: "6px", background: "#eff6ff", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#1d4ed8", fontWeight: 600 }}>{item.label}</span>
+                <span style={{ fontSize: "14px", fontWeight: 700, color: "#1e3a8a" }}>{counts[item.key]}</span>
+              </div>
+            ))}
+
+            {stageFeetCount > 0 && Object.entries(stageFeetSummary).sort(([a], [b]) => Number(a) - Number(b)).map(([height, value]) => (
+              <div key={height} style={{ border: "1px solid #bfdbfe", padding: "6px 12px", borderRadius: "6px", background: "#dbeafe", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#1e40af", fontWeight: 600 }}>Pés {height}cm</span>
+                <span style={{ fontSize: "14px", fontWeight: 700, color: "#1e3a8a" }}>{value}</span>
+              </div>
+            ))}
+
+            {carpetColor.trim() && stageFeetCount > 0 && (
+              <div style={{ border: "1px solid #bfdbfe", padding: "6px 12px", borderRadius: "6px", background: "#eff6ff", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#1d4ed8", fontWeight: 600 }}>Carpete</span>
+                <span style={{ fontSize: "14px", fontWeight: 700, color: "#1e3a8a" }}>{carpetColor}</span>
+              </div>
+            )}
+
             {ACCESSORY_TYPES.filter((item) => (accessoryCounts[item.key] || 0) > 0).map((item) => (
               <div key={item.key} style={{ border: "1px solid #e2e8f0", padding: "6px 12px", borderRadius: "6px", background: "#f1f5f9", display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "11px", color: "#475569", fontWeight: 600 }}>{item.label}</span>
@@ -795,6 +986,7 @@ function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, on
   const offsetRef = useRef({ x: 0, y: 0 });
   const { width, height } = getPieceSize(piece.type, piece.rotation);
   const isCube = piece.type === "cube";
+  const stageModule = getStageModule(piece.type);
   const isVertical = piece.rotation === 90 || piece.rotation === 270;
 
   function handleMouseDown(e) {
@@ -844,7 +1036,13 @@ function Piece({ piece, pieces, boardRef, updatePiece, deletePiece, selected, on
       onContextMenu={handleContextMenu} 
       style={{ position: "absolute", left: piece.x, top: piece.y, width, height, cursor: isSpacePressedRef.current ? "grabbing" : "grab", userSelect: "none", zIndex: 20, touchAction: "none" }}
     >
-      {isCube ? (
+      {stageModule ? (
+        <div style={{ width: "100%", height: "100%", background: "#eff6ff", border: selected ? "3px solid #2563eb" : "2px solid #1d4ed8", borderRadius: "8px", boxSizing: "border-box", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: selected ? "0 0 0 4px rgba(37,99,235,0.2)" : "0 2px 4px rgba(0,0,0,0.1)", position: "relative", overflow: "hidden" }}>
+          <div style={{ position: "absolute", inset: 0, backgroundImage: "linear-gradient(45deg, transparent 49%, rgba(37,99,235,0.2) 50%, transparent 51%), linear-gradient(-45deg, transparent 49%, rgba(37,99,235,0.2) 50%, transparent 51%)" }} />
+          <span style={{ position: "relative", fontSize: 16, fontWeight: 800, color: "#1e3a8a" }}>{stageModule.widthCm / 100} x {stageModule.depthCm / 100}</span>
+          <span style={{ position: "relative", fontSize: 11, fontWeight: 700, color: "#1d4ed8", marginTop: 4 }}>Pé {getPieceStageHeight(piece)}cm</span>
+        </div>
+      ) : isCube ? (
         <div style={{ width: "100%", height: "100%", background: "#f8fafc", border: selected ? "3px solid #2563eb" : "2px solid #334155", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: selected ? "0 0 0 4px rgba(37,99,235,0.2)" : "0 2px 4px rgba(0,0,0,0.1)" }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: "#334155" }}>15</span>
         </div>
